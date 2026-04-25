@@ -73,6 +73,7 @@ async def startup_event():
 async def get_history():
     if not r: return []
     keys = r.keys("tsunami:*")
+    # Ordenar por timestamp para tener lo más nuevo arriba
     sorted_keys = sorted(keys, reverse=True)[:20]
     historial = []
     for k in sorted_keys:
