@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from app.scanner import binance_stream
 
-app = FastAPI(title="Binance Volume Sniper V2")
+app = FastAPI(title="Binance Volume Sniper")
 
 # --- CONFIGURACIÓN DE REDIS ---
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -29,10 +29,10 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        print(f"📡 Cliente conectado al WS. Total: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: str):
         for connection in self.active_connections:
@@ -54,7 +54,7 @@ async def get_index():
     index_path = os.path.join("static", "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return {"error": "No se encontró index.html en carpeta static"}
+    return {"error": "No se encontró index.html"}
 
 @app.websocket("/ws/volumen")
 async def websocket_endpoint(websocket: WebSocket):
@@ -64,28 +64,19 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        print("🔌 Cliente desconectado")
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Iniciando Scanner...")
     asyncio.create_task(binance_stream())
 
 @app.get("/historial")
 async def get_history():
-    if not r:
-        return []
-    # Buscamos todas las llaves de tsunamis
+    if not r: return []
     keys = r.keys("tsunami:*")
-    # Las ordenamos para tener lo más reciente primero
-    sorted_keys = sorted(keys, reverse=True)[:20] # Limitamos a los últimos 20
+    sorted_keys = sorted(keys, reverse=True)[:20]
     historial = []
     for k in sorted_keys:
         data = r.hgetall(k)
         if data:
             historial.append(data)
     return historial
-
-@app.get("/status")
-async def get_status():
-    return {"status": "online", "redis": r.ping() if r else False}

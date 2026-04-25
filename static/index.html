@@ -11,39 +11,31 @@
             50% { border-color: rgba(234, 179, 8, 1); }
             100% { border-color: rgba(234, 179, 8, 0.4); }
         }
-        .alerta-nueva {
-            animation: pulse-border 2s infinite;
-        }
+        .alerta-nueva { animation: pulse-border 2s infinite; }
     </style>
 </head>
 <body class="bg-[#0b0e11] text-white font-sans min-h-screen p-4 md:p-10">
     <div class="max-w-2xl mx-auto">
         <div class="flex justify-between items-center mb-8">
-            <h1 class="text-2xl font-bold flex items-center gap-2">
-                📡 <span class="tracking-tight">Monitor de Volumen</span>
-            </h1>
-            <div id="status" class="px-4 py-1 rounded-full bg-red-500/20 text-red-500 text-xs font-bold border border-red-500/50 transition-all duration-500">
-                Desconectado
-            </div>
+            <h1 class="text-2xl font-bold flex items-center gap-2">📡 Monitor de Volumen</h1>
+            <div id="status" class="px-4 py-1 rounded-full bg-red-500/20 text-red-500 text-xs font-bold border border-red-500/50">Desconectado</div>
         </div>
 
         <div class="grid grid-cols-2 gap-6 mb-10">
-            <div class="bg-[#1e2329] p-6 rounded-xl border border-gray-800 shadow-xl">
+            <div class="bg-[#1e2329] p-6 rounded-xl border border-gray-800 shadow-xl text-center">
                 <p class="text-gray-400 text-xs uppercase tracking-wider mb-2 font-semibold">Paquetes recibidos</p>
-                <p id="pkt-count" class="text-4xl font-mono font-bold text-white">0</p>
+                <p id="pkt-count" class="text-4xl font-mono font-bold">0</p>
             </div>
-            <div class="bg-[#1e2329] p-6 rounded-xl border border-gray-800 shadow-xl">
+            <div class="bg-[#1e2329] p-6 rounded-xl border border-gray-800 shadow-xl text-center">
                 <p class="text-gray-400 text-xs uppercase tracking-wider mb-2 font-semibold">Alertas disparadas</p>
                 <p id="alert-count" class="text-4xl font-mono font-bold text-yellow-500">0</p>
             </div>
         </div>
 
         <div class="space-y-4">
-            <h2 class="text-sm text-gray-500 font-bold uppercase tracking-widest mb-4 px-1">Flujo de Tsunamis</h2>
+            <h2 class="text-sm text-gray-500 font-bold uppercase tracking-widest px-1">Flujo de Tsunamis</h2>
             <div id="alerts-container" class="space-y-3">
-                <p id="placeholder" class="text-gray-600 italic text-center py-10 border-2 border-dashed border-gray-800 rounded-xl">
-                    Esperando movimientos bruscos en el mercado...
-                </p>
+                <p id="placeholder" class="text-gray-600 italic text-center py-10 border-2 border-dashed border-gray-800 rounded-xl">Esperando movimientos...</p>
             </div>
         </div>
     </div>
@@ -51,7 +43,7 @@
     <script>
         let pkts = 0;
         let alerts = 0;
-
+        let socket;
         const container = document.getElementById('alerts-container');
 
         function crearAlertaVisual(data, esHistorial = false) {
@@ -59,7 +51,6 @@
             if (placeholder) placeholder.remove();
 
             const div = document.createElement('div');
-            // Si es historial, no le ponemos la animación de pulso
             const claseAnimacion = esHistorial ? "" : "alerta-nueva";
             div.className = `bg-[#1e2329] p-4 rounded-lg border-l-4 border-yellow-500 flex justify-between items-center shadow-lg ${claseAnimacion} transition-all duration-300 transform hover:scale-[1.02]`;
 
@@ -70,7 +61,7 @@
                 </div>
                 <div class="text-right">
                     <div class="text-green-400 font-mono font-bold">$${parseFloat(data.price).toLocaleString()}</div>
-                    <div class="text-[10px] text-gray-400 uppercase tracking-tighter">Vol: ${Math.round(data.volume)}</div>
+                    <div class="text-[10px] text-gray-400 uppercase tracking-tighter text-right">Vol: ${Math.round(data.volume)}</div>
                 </div>
             `;
             container.prepend(div);
@@ -80,51 +71,46 @@
             try {
                 const res = await fetch('/historial');
                 const historial = await res.json();
-                // El historial viene del más nuevo al más viejo, lo revertimos para que al hacer prepend queden bien
                 historial.reverse().forEach(alerta => {
                     alerts++;
                     crearAlertaVisual(alerta, true);
                 });
                 document.getElementById('alert-count').textContent = alerts;
-            } catch (err) {
-                console.error("Error cargando historial:", err);
-            }
+            } catch (err) { console.error("Error historial:", err); }
         }
 
-        // Conexión WebSocket
-        const socket = new WebSocket(`ws://${window.location.host}/ws/volumen`);
+        function conectar() {
+            socket = new WebSocket(`ws://${window.location.host}/ws/volumen`);
 
-        socket.onopen = () => {
-            const statusDiv = document.getElementById('status');
-            statusDiv.textContent = 'Conectado';
-            statusDiv.className = 'px-4 py-1 rounded-full bg-green-500/20 text-green-400 text-xs font-bold border border-green-500/50';
-            cargarHistorial(); // Cargamos historial nada más conectar
-        };
+            socket.onopen = () => {
+                const statusDiv = document.getElementById('status');
+                statusDiv.textContent = 'Conectado';
+                statusDiv.className = 'px-4 py-1 rounded-full bg-green-500/20 text-green-400 text-xs font-bold border border-green-500/50';
+                cargarHistorial();
+            };
 
-        socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-
-            if (data.type === 'tick') {
-                pkts++;
-                document.getElementById('pkt-count').textContent = pkts.toLocaleString();
-            }
-
-            if (data.type === 'alert') {
-                alerts++;
-                document.getElementById('alert-count').textContent = alerts;
-                crearAlertaVisual(data);
-
-                if (container.children.length > 20) {
-                    container.removeChild(container.lastChild);
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'tick') {
+                    pkts++;
+                    document.getElementById('pkt-count').textContent = pkts.toLocaleString();
                 }
-            }
-        };
+                if (data.type === 'alert') {
+                    alerts++;
+                    document.getElementById('alert-count').textContent = alerts;
+                    crearAlertaVisual(data);
+                    if (container.children.length > 20) container.removeChild(container.lastChild);
+                }
+            };
 
-        socket.onclose = () => {
-            const statusDiv = document.getElementById('status');
-            statusDiv.textContent = 'Desconectado';
-            statusDiv.className = 'px-4 py-1 rounded-full bg-red-500/20 text-red-500 text-xs font-bold border border-red-500/50';
-        };
+            socket.onclose = () => {
+                document.getElementById('status').textContent = 'Reconectando...';
+                document.getElementById('status').className = 'px-4 py-1 rounded-full bg-yellow-500/20 text-yellow-500 text-xs font-bold border border-yellow-500/50';
+                setTimeout(conectar, 5000);
+            };
+        }
+
+        conectar();
     </script>
 </body>
 </html>
