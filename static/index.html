@@ -52,55 +52,69 @@
         let pkts = 0;
         let alerts = 0;
 
-        // Conexión dinámica al WebSocket del servidor
+        const container = document.getElementById('alerts-container');
+
+        function crearAlertaVisual(data, esHistorial = false) {
+            const placeholder = document.getElementById('placeholder');
+            if (placeholder) placeholder.remove();
+
+            const div = document.createElement('div');
+            // Si es historial, no le ponemos la animación de pulso
+            const claseAnimacion = esHistorial ? "" : "alerta-nueva";
+            div.className = `bg-[#1e2329] p-4 rounded-lg border-l-4 border-yellow-500 flex justify-between items-center shadow-lg ${claseAnimacion} transition-all duration-300 transform hover:scale-[1.02]`;
+
+            div.innerHTML = `
+                <div class="flex flex-col">
+                    <span class="text-yellow-500 font-bold text-lg leading-none">${data.symbol}</span>
+                    <span class="text-[10px] text-gray-500 mt-1 font-mono">${data.time}</span>
+                </div>
+                <div class="text-right">
+                    <div class="text-green-400 font-mono font-bold">$${parseFloat(data.price).toLocaleString()}</div>
+                    <div class="text-[10px] text-gray-400 uppercase tracking-tighter">Vol: ${Math.round(data.volume)}</div>
+                </div>
+            `;
+            container.prepend(div);
+        }
+
+        async function cargarHistorial() {
+            try {
+                const res = await fetch('/historial');
+                const historial = await res.json();
+                // El historial viene del más nuevo al más viejo, lo revertimos para que al hacer prepend queden bien
+                historial.reverse().forEach(alerta => {
+                    alerts++;
+                    crearAlertaVisual(alerta, true);
+                });
+                document.getElementById('alert-count').textContent = alerts;
+            } catch (err) {
+                console.error("Error cargando historial:", err);
+            }
+        }
+
+        // Conexión WebSocket
         const socket = new WebSocket(`ws://${window.location.host}/ws/volumen`);
 
         socket.onopen = () => {
             const statusDiv = document.getElementById('status');
             statusDiv.textContent = 'Conectado';
             statusDiv.className = 'px-4 py-1 rounded-full bg-green-500/20 text-green-400 text-xs font-bold border border-green-500/50';
-            console.log("✅ Conectado al servidor Sniper");
+            cargarHistorial(); // Cargamos historial nada más conectar
         };
 
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
 
-            // 1. Manejar TICK (Contador de paquetes)
             if (data.type === 'tick') {
                 pkts++;
                 document.getElementById('pkt-count').textContent = pkts.toLocaleString();
             }
 
-            // 2. Manejar ALERTA (Tsunamis reales o de prueba)
             if (data.type === 'alert') {
                 alerts++;
                 document.getElementById('alert-count').textContent = alerts;
+                crearAlertaVisual(data);
 
-                // Eliminar el placeholder si es la primera alerta
-                const placeholder = document.getElementById('placeholder');
-                if (placeholder) placeholder.remove();
-
-                // Crear elemento de alerta
-                const container = document.getElementById('alerts-container');
-                const div = document.createElement('div');
-                div.className = "bg-[#1e2329] p-4 rounded-lg border-l-4 border-yellow-500 flex justify-between items-center shadow-lg alerta-nueva transition-all duration-300 transform hover:scale-[1.02]";
-
-                div.innerHTML = `
-                    <div class="flex flex-col">
-                        <span class="text-yellow-500 font-bold text-lg leading-none">${data.symbol}</span>
-                        <span class="text-[10px] text-gray-500 mt-1 font-mono">${data.time}</span>
-                    </div>
-                    <div class="text-right">
-                        <div class="text-green-400 font-mono font-bold">$${parseFloat(data.price).toLocaleString()}</div>
-                        <div class="text-[10px] text-gray-400 uppercase tracking-tighter">Vol: ${Math.round(data.volume)}</div>
-                    </div>
-                `;
-
-                // Insertar al principio de la lista
-                container.prepend(div);
-
-                // Limitar a las últimas 10 alertas para no saturar el navegador
-                if (container.children.length > 10) {
+                if (container.children.length > 20) {
                     container.removeChild(container.lastChild);
                 }
             }
@@ -110,11 +124,6 @@
             const statusDiv = document.getElementById('status');
             statusDiv.textContent = 'Desconectado';
             statusDiv.className = 'px-4 py-1 rounded-full bg-red-500/20 text-red-500 text-xs font-bold border border-red-500/50';
-            console.log("❌ Conexión perdida");
-        };
-
-        socket.onerror = (error) => {
-            console.error('Error en WebSocket:', error);
         };
     </script>
 </body>

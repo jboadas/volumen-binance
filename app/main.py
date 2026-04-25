@@ -17,8 +17,8 @@ try:
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
     r.ping()
     print("✅ Conectado a Redis")
-except:
-    print("❌ Error: Redis no disponible")
+except Exception as e:
+    print(f"❌ Error: Redis no disponible: {e}")
     r = None
 
 # --- GESTOR DE WEBSOCKETS ---
@@ -73,12 +73,19 @@ async def startup_event():
 
 @app.get("/historial")
 async def get_history():
-    if not r: return {"detecciones": []}
+    if not r:
+        return []
+    # Buscamos todas las llaves de tsunamis
     keys = r.keys("tsunami:*")
-    historial = [r.hgetall(k) for k in sorted(keys, reverse=True)]
-    return {"detecciones": historial}
+    # Las ordenamos para tener lo más reciente primero
+    sorted_keys = sorted(keys, reverse=True)[:20] # Limitamos a los últimos 20
+    historial = []
+    for k in sorted_keys:
+        data = r.hgetall(k)
+        if data:
+            historial.append(data)
+    return historial
 
 @app.get("/status")
 async def get_status():
-    # Aquí estaba el error, faltaba cerrar el diccionario y las comillas
     return {"status": "online", "redis": r.ping() if r else False}
