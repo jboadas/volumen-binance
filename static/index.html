@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Scanner Pro - Debug Mode</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white p-10">
+    <div class="max-w-2xl mx-auto">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-2xl font-bold">📡 Monitor de Volumen</h1>
+            <div id="status" class="px-3 py-1 rounded bg-red-600 text-xs">Desconectado</div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 mb-6">
+            <div class="bg-gray-800 p-4 rounded shadow">
+                <p class="text-gray-400 text-sm">Paquetes recibidos</p>
+                <p id="pkt-count" class="text-2xl font-mono">0</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded shadow">
+                <p class="text-gray-400 text-sm">Alertas disparadas</p>
+                <p id="alert-count" class="text-2xl font-mono text-yellow-400">0</p>
+            </div>
+        </div>
+
+        <div id="alerts" class="space-y-2">
+            <p class="text-gray-600 italic text-center">Escuchando flujo de datos...</p>
+        </div>
+    </div>
+
+    <script>
+        let pkts = 0;
+        let alerts = 0;
+        const socket = new WebSocket('ws://' + window.location.host + '/ws/volumen');
+
+        socket.onopen = () => {
+            document.getElementById('status').textContent = 'Conectado';
+            document.getElementById('status').className = 'px-3 py-1 rounded bg-green-600 text-xs';
+        };
+
+        socket.onmessage = (event) => {
+            pkts++;
+            document.getElementById('pkt-count').textContent = pkts;
+            
+            const response = JSON.parse(event.data);
+            if (response.type === 'VOLUME_SPIKE') {
+                response.data.forEach(data => {
+                    alerts++;
+                    document.getElementById('alert-count').textContent = alerts;
+                    const div = document.createElement('div');
+                    div.className = "p-3 bg-gray-800 border-l-4 border-yellow-500 flex justify-between items-center animate-bounce";
+                    div.innerHTML = `<span>${data.symbol}</span><span class="font-mono text-green-400">+$${data.delta_usdt}</span>`;
+                    document.getElementById('alerts').prepend(div);
+                });
+            }
+        };
+
+        socket.onerror = (error) => console.error('Error WS:', error);
+    </script>
+</body>
+</html>
