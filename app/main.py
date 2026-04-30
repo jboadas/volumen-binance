@@ -1,58 +1,62 @@
-import asyncio
-import redis
+import sys
 import os
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from app.scanner import binance_stream
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse
+import uvicorn
 
-app = FastAPI()
+# Forzamos la ruta para asegurar que encuentre scanner.py en el entorno local
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from scanner import iniciar_escaneo_binance, r
 
-# --- REDIS ---
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+# CONFIGURACIÓN DE RUTAS SEGÚN TU IMAGEN
+# BASE_DIR es la carpeta 'app'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ROOT_DIR es la carpeta raíz donde está 'static'
+ROOT_DIR = os.path.dirname(BASE_DIR)
+# Apuntamos a la carpeta static que está fuera de app
+templates = Jinja2Templates(directory=os.path.join(ROOT_DIR, "static"))
 
-# --- WS MANAGER ---
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            try: await connection.send_text(message)
-            except: pass
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Gestiona el ciclo de vida de la aplicación.
+    Lanza el Sniper de Ruptura de Rangos al iniciar y lo detiene al cerrar.
+    """
+    pares = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']
 
-manager = ConnectionManager()
+    # Tarea de fondo para el escáner asíncrono
+    task = asyncio.create_task(iniciar_escaneo_binance(pares))
 
-# Servir estáticos
-if os.path.exists("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+    yield
 
-@app.get("/")
-async def get_index():
-    return FileResponse(os.path.join("static", "index.html"))
-
-@app.websocket("/ws/volumen")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    task.cancel()
     try:
-        while True: await websocket.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        await task
+    except asyncio.CancelledError:
+        print("🛑 Sniper detenido correctamente.")
 
-@app.on_event("startup")
-async def startup_event():
-    # Iniciamos el scanner enfocado
-    asyncio.create_task(binance_stream())
+app = FastAPI(lifespan=lifespan)
 
-@app.get("/historial")
-async def get_history():
-    keys = r.keys("tsunami:*")
-    sorted_keys = sorted(keys, reverse=True)[:30]
-    return [r.hgetall(k) for k in sorted_keys if r.exists(k)]
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    """
+    Renderiza la interfaz obteniendo datos en tiempo real de Redis.
+    """
+    # Obtenemos las estadísticas de forma asíncrona desde Redis
+    ticks = await r.get("stats:total_ticks") or 0
+    alerts = await r.get("stats:alerts_today") or 0
+
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "ticks": "{:,}".format(int(ticks)),
+            "alerts": alerts
+        }
+    )
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

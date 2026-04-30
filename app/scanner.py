@@ -1,96 +1,119 @@
 import asyncio
-import websockets
+import time
 import json
-import redis
-import httpx
-from datetime import datetime
+import websockets
+import redis.asyncio as redis
 
+# Configuración de la estrategia y persistencia
+RANGE_WINDOW = 3600  # Ventana de 1 hora para el cálculo de volatilidad
 r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 
-# --- CONFIGURACIÓN DE DISPARO ---
-VOLUMEN_MINIMO_USDT = 500.0
-MULTIPLICADOR_TSUNAMI = 1.5
-PRECIO_MAXIMO = 100.0
+async def update_range(symbol, price, volume):
+    """
+    Calcula si el precio actual rompe el máximo o mínimo de la última hora
+    utilizando un Pipeline de Redis para máxima velocidad.
+    """
+    now = time.time()
+    tick_data = json.dumps({'p': price, 'v': volume, 't': now})
 
-async def obtener_top_50_volatiles():
-    url = "https://api.binance.com/api/v3/ticker/24hr"
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url)
-            data = response.json()
+        async with r.pipeline(transaction=True) as pipe:
+            # 1. Guardar el nuevo tick
+            pipe.zadd(f"series:{symbol}", {tick_data: now})
+            # 2. Limpiar datos antiguos (fuera de la ventana de 1h)
+            pipe.zremrangebyscore(f"series:{symbol}", 0, now - RANGE_WINDOW)
+            # 3. Obtener el historial para el cálculo
+            pipe.zrange(f"series:{symbol}", 0, -1)
+            results = await pipe.execute()
 
-            excluir = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'USDCUSDT', 'FDUSDUSDT', 'DAIUSDT', 'PYUSDUSDT']
+        history = results[2]
+        if len(history) < 10:
+            return None
 
-            # Filtro estricto de precio y exclusión
-            filtrados = []
-            for d in data:
-                simbolo = d['symbol']
-                precio = float(d['lastPrice'])
+        prices = [json.loads(t)['p'] for t in history]
+        volumes = [json.loads(t)['v'] for t in history]
 
-                if simbolo.endswith('USDT') and precio < PRECIO_MAXIMO and simbolo not in excluir:
-                    filtrados.append(d)
+        # Máximo y mínimo excluyendo el tick actual
+        high_1h = max(prices[:-1])
+        low_1h = min(prices[:-1])
+        avg_vol = sum(volumes) / len(volumes)
 
-            top_50 = sorted(filtrados, key=lambda x: float(x['quoteVolume']), reverse=True)[:50]
-            pares = [p['symbol'] for p in top_50]
+        # Lógica de Ruptura de Rango (Volatility Breakout)
+        # Confirmación: Precio rompe el nivel + Volumen > 1.5x el promedio
+        if price > high_1h and volume > (avg_vol * 1.5):
+            return "LONG_BREAKOUT", high_1h, low_1h
+        elif price < low_1h and volume > (avg_vol * 1.5):
+            return "SHORT_BREAKOUT", high_1h, low_1h
 
-            print(f"🎯 Sniper Calibrado: {len(pares)} activos por debajo de ${PRECIO_MAXIMO}")
-            return pares
-    except Exception as e:
-        print(f"❌ Error API: {e}")
-        return []
+    except Exception:
+        # Silenciamos errores de procesamiento para mantener el flujo
+        pass
 
-async def binance_stream():
-    from app.main import manager
+    return None
 
-    pares_objetivo = await obtener_top_50_volatiles()
-    if not pares_objetivo: return
+async def procesar_tick(data):
+    """
+    Extrae los datos del tick y actualiza las estadísticas en Redis.
+    """
+    try:
+        # Formato de stream directo: 's'=symbol, 'p'=price, 'q'=quantity/volume
+        symbol = data['s']
+        price = float(data['p'])
+        volume = float(data['q'])
 
-    streams = "/".join([f"{p.lower()}@miniTicker" for p in pares_objetivo])
-    url = f"wss://stream.binance.com:9443/ws/{streams}"
+        # Incrementar contador global de ticks en Redis
+        await r.incr("stats:total_ticks")
 
-    memoria_mercado = {}
+        analysis = await update_range(symbol, price, volume)
+        if analysis:
+            alert_type, h, l = analysis
+            await r.incr("stats:alerts_today")
+            # Log de la ruptura detectada en la terminal
+            print(f"[{time.strftime('%H:%M:%S')}] 🎯 {symbol} {alert_type} | P: {price} | Rango: {l}-{h}")
+
+    except Exception:
+        pass
+
+async def iniciar_escaneo_binance(symbols):
+    """
+    Conexión directa vía Websockets con gestión de Keepalive (Ping/Pong).
+    """
+    # Construcción de la URL de streams multiplexados
+    streams = "/".join([f"{s.lower()}@trade" for s in symbols])
+    url = f"wss://stream.binance.com:9443/stream?streams={streams}"
 
     while True:
+        print(f"📡 {time.strftime('%H:%M:%S')} - Conectando directamente a Binance...")
         try:
-            async with websockets.connect(url) as websocket:
+            # Configuración robusta para evitar timeouts de red
+            async with websockets.connect(
+                url,
+                ping_interval=20,
+                ping_timeout=30,
+                close_timeout=10
+            ) as ws:
+                print(f"✅ Sniper Directo Activo | Pares: {len(symbols)}")
+
                 while True:
-                    msg = await websocket.recv()
-                    coin = json.loads(msg)
-                    await manager.broadcast(json.dumps({"type": "tick"}))
+                    try:
+                        # Esperamos el mensaje con un timeout superior al ping_interval
+                        mensaje = await asyncio.wait_for(ws.recv(), timeout=40)
+                        data = json.loads(mensaje)
 
-                    symbol = coin['s']
-                    current_vol = float(coin['v'])
-                    current_price = float(coin['c'])
+                        if 'data' in data:
+                            # Delegamos el procesamiento a una tarea de fondo
+                            asyncio.create_task(procesar_tick(data['data']))
 
-                    # Verificación doble de precio por si acaso
-                    if current_price >= PRECIO_MAXIMO:
-                        continue
+                    except asyncio.TimeoutError:
+                        # Si hay silencio en el stream, verificamos si la conexión sigue viva
+                        print("🔍 Verificando latido del socket...")
+                        pong_waiter = await ws.ping()
+                        await asyncio.wait_for(pong_waiter, timeout=10)
 
-                    if symbol in memoria_mercado:
-                        prev_vol = memoria_mercado[symbol]['vol']
-                        prev_price = memoria_mercado[symbol]['price']
+                    # Pequeña pausa para el loop asíncrono
+                    await asyncio.sleep(0)
 
-                        if current_vol > (prev_vol * MULTIPLICADOR_TSUNAMI) and current_vol > VOLUMEN_MINIMO_USDT:
-                            diff = current_price - prev_price
-                            pct_change = (diff / prev_price) * 100 if prev_price > 0 else 0
-
-                            alert_payload = {
-                                "type": "alert",
-                                "symbol": symbol,
-                                "price": f"{current_price:.6f}",
-                                "volume": current_vol,
-                                "change": f"{pct_change:+.4f}%",
-                                "time": datetime.now().strftime("%H:%M:%S")
-                            }
-
-                            # Persistencia
-                            key = f"tsunami:{symbol}:{int(datetime.now().timestamp())}"
-                            r.hset(key, mapping=alert_payload)
-                            r.expire(key, 86400)
-
-                            await manager.broadcast(json.dumps(alert_payload))
-                            print(f"🚨 {symbol} | ${current_price} | Vol: {current_vol:.0f}")
-
-                    memoria_mercado[symbol] = {'vol': current_vol, 'price': current_price}
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Error de conexión: {e}")
+            print("🔄 Reiniciando socket en 5 segundos...")
             await asyncio.sleep(5)

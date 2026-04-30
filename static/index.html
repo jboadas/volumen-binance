@@ -2,116 +2,44 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Binance Sniper - 50 Pares</title>
+    <title>Sniper Scalper - Ruptura 1H</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        @keyframes pulse-border {
-            0% { border-color: rgba(234, 179, 8, 0.4); }
-            50% { border-color: rgba(234, 179, 8, 1); }
-            100% { border-color: rgba(234, 179, 8, 0.4); }
-        }
-        .alerta-nueva { animation: pulse-border 2s infinite; }
+        body { background-color: #020617; font-family: 'Courier New', Courier, monospace; }
+        .stat-card { border: 1px solid #1e293b; background: #0f172a; }
     </style>
 </head>
-<body class="bg-[#0b0e11] text-white font-sans min-h-screen p-4 md:p-10">
-    <div class="max-w-2xl mx-auto">
-        <div class="flex justify-between items-center mb-8">
-            <h1 class="text-2xl font-bold flex items-center gap-2">🎯 Sniper 50 Pares</h1>
-            <div id="status" class="px-4 py-1 rounded-full bg-red-500/20 text-red-500 text-xs font-bold border border-red-500/50 transition-all duration-500">Desconectado</div>
+<body class="text-slate-300 p-6">
+    <div class="max-w-3xl mx-auto">
+        <header class="flex justify-between items-center border-b border-slate-800 pb-4 mb-8">
+            <h1 class="text-xl font-bold text-white uppercase tracking-tighter">🎯 Sniper_Volatility_v2</h1>
+            <div class="flex items-center gap-2">
+                <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                <span class="text-xs text-green-500 font-bold uppercase">Socket Active</span>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-2 gap-4">
+            <div class="stat-card p-6 rounded shadow-xl">
+                <h3 class="text-xs font-bold text-slate-500 uppercase tracking-widest">Grind Ticks</h3>
+                <p class="text-4xl font-black text-white mt-1">{{ ticks }}</p>
+            </div>
+            <div class="stat-card p-6 rounded shadow-xl">
+                <h3 class="text-xs font-bold text-slate-500 uppercase tracking-widest">Alertas 1h</h3>
+                <p class="text-4xl font-black text-yellow-500 mt-1">{{ alerts }}</p>
+            </div>
         </div>
 
-        <div class="grid grid-cols-2 gap-6 mb-10">
-            <div class="bg-[#1e2329] p-6 rounded-xl border border-gray-800 shadow-xl text-center">
-                <p class="text-gray-400 text-xs uppercase tracking-wider mb-2 font-semibold">Ticks Recibidos</p>
-                <p id="pkt-count" class="text-4xl font-mono font-bold text-white">0</p>
-            </div>
-            <div class="bg-[#1e2329] p-6 rounded-xl border border-gray-800 shadow-xl text-center">
-                <p class="text-gray-400 text-xs uppercase tracking-wider mb-2 font-semibold">Alertas (Hoy)</p>
-                <p id="alert-count" class="text-4xl font-mono font-bold text-yellow-500">0</p>
-            </div>
-        </div>
-
-        <div class="space-y-4">
-            <h2 class="text-sm text-gray-500 font-bold uppercase tracking-widest px-1">Movimientos Detectados</h2>
-            <div id="alerts-container" class="space-y-3">
-                <p id="placeholder" class="text-gray-600 italic text-center py-10 border-2 border-dashed border-gray-800 rounded-xl">Monitoreando lista seleccionada...</p>
-            </div>
+        <div class="mt-8 bg-black p-4 border border-slate-800 text-xs">
+            <p class="text-slate-500">SYSTEM_LOG:</p>
+            <p class="mt-2 text-blue-400">> Firewall activo en MX Linux</p>
+            <p class="text-green-400">> Monitorizando ruptura de rangos (Volatility Breakout)</p>
+            <p class="text-slate-400">> Redis persistence: OK</p>
         </div>
     </div>
-
     <script>
-        let pkts = 0;
-        let alerts = 0;
-        let socket;
-        const container = document.getElementById('alerts-container');
-
-        function crearAlertaVisual(data, esHistorial = false) {
-            const placeholder = document.getElementById('placeholder');
-            if (placeholder) placeholder.remove();
-
-            const div = document.createElement('div');
-            const claseAnimacion = esHistorial ? "" : "alerta-nueva";
-            const esPositivo = data.change.includes('+');
-            const colorCambio = esPositivo ? 'text-green-400' : 'text-red-400';
-
-            div.className = `bg-[#1e2329] p-4 rounded-lg border-l-4 border-yellow-500 flex justify-between items-center shadow-lg ${claseAnimacion} transition-all duration-300 transform hover:scale-[1.02]`;
-
-            div.innerHTML = `
-                <div class="flex flex-col">
-                    <span class="text-yellow-500 font-bold text-lg leading-none">${data.symbol}</span>
-                    <span class="text-[10px] text-gray-500 mt-1 font-mono">${data.time}</span>
-                </div>
-                <div class="text-right">
-                    <div class="flex items-center justify-end gap-2">
-                        <span class="font-mono font-bold text-white text-sm">$${data.price}</span>
-                        <span class="font-mono text-xs font-bold ${colorCambio}">${data.change}</span>
-                    </div>
-                    <div class="text-[10px] text-gray-400 uppercase tracking-tighter">Vol: ${Math.round(data.volume)}</div>
-                </div>
-            `;
-            container.prepend(div);
-        }
-
-        async function cargarHistorial() {
-            try {
-                const res = await fetch('/historial');
-                const historial = await res.json();
-                historial.reverse().forEach(alerta => {
-                    alerts++;
-                    crearAlertaVisual(alerta, true);
-                });
-                document.getElementById('alert-count').textContent = alerts;
-            } catch (err) { console.error("Error historial:", err); }
-        }
-
-        function conectar() {
-            socket = new WebSocket(`ws://${window.location.host}/ws/volumen`);
-            socket.onopen = () => {
-                document.getElementById('status').textContent = 'Escaneando';
-                document.getElementById('status').className = 'px-4 py-1 rounded-full bg-green-500/20 text-green-400 text-xs font-bold border border-green-500/50';
-                cargarHistorial();
-            };
-            socket.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                if (data.type === 'tick') {
-                    pkts++;
-                    document.getElementById('pkt-count').textContent = pkts.toLocaleString();
-                }
-                if (data.type === 'alert') {
-                    alerts++;
-                    document.getElementById('alert-count').textContent = alerts;
-                    crearAlertaVisual(data);
-                    if (container.children.length > 30) container.removeChild(container.lastChild);
-                }
-            };
-            socket.onclose = () => {
-                document.getElementById('status').textContent = 'Reconectando...';
-                document.getElementById('status').className = 'px-4 py-1 rounded-full bg-yellow-500/20 text-yellow-500 text-xs font-bold border border-yellow-500/50';
-                setTimeout(conectar, 5000);
-            };
-        }
-        conectar();
+        // Refresco cada 3 segundos para no saturar
+        setTimeout(() => { location.reload(); }, 3000);
     </script>
 </body>
 </html>
