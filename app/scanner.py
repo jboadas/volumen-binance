@@ -1,119 +1,71 @@
 import asyncio
-import time
+import datetime
 import json
+import redis
 import websockets
-import redis.asyncio as redis
 
-# Configuración de la estrategia y persistencia
-RANGE_WINDOW = 3600  # Ventana de 1 hora para el cálculo de volatilidad
-r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+class SniperScanner:
+    def __init__(self, symbols, config):
+        self.symbols_raw = [s.upper() for s in symbols]
+        self.symbols_low = [s.lower() for s in symbols]
+        self.config = config
+        self.db = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
-async def update_range(symbol, price, volume):
-    """
-    Calcula si el precio actual rompe el máximo o mínimo de la última hora
-    utilizando un Pipeline de Redis para máxima velocidad.
-    """
-    now = time.time()
-    tick_data = json.dumps({'p': price, 'v': volume, 't': now})
+    async def start(self):
+        # Construcción de URL para múltiples streams (Ticker de 24h)
+        streams = "/".join([f"{s}@ticker" for s in self.symbols_low])
+        uri = f"wss://stream.binance.com:9443/ws/{streams}"
 
-    try:
-        async with r.pipeline(transaction=True) as pipe:
-            # 1. Guardar el nuevo tick
-            pipe.zadd(f"series:{symbol}", {tick_data: now})
-            # 2. Limpiar datos antiguos (fuera de la ventana de 1h)
-            pipe.zremrangebyscore(f"series:{symbol}", 0, now - RANGE_WINDOW)
-            # 3. Obtener el historial para el cálculo
-            pipe.zrange(f"series:{symbol}", 0, -1)
-            results = await pipe.execute()
+        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Conectando a Binance WebSocket...")
 
-        history = results[2]
-        if len(history) < 10:
-            return None
+        while True:
+            try:
+                async with websockets.connect(uri) as websocket:
+                    print("✅ Conexión establecida con Binance.")
+                    while True:
+                        message = await websocket.recv()
+                        data = json.loads(message)
 
-        prices = [json.loads(t)['p'] for t in history]
-        volumes = [json.loads(t)['v'] for t in history]
+                        symbol = data['s']
+                        precio_actual = float(data['c'])
+                        # Aquí podrías calcular volumen relativo real comparando data['v']
+                        # Por ahora mantenemos un valor de monitoreo
+                        vol_rel = 1.05
 
-        # Máximo y mínimo excluyendo el tick actual
-        high_1h = max(prices[:-1])
-        low_1h = min(prices[:-1])
-        avg_vol = sum(volumes) / len(volumes)
+                        # Actualizamos Redis
+                        self.db.set(f"precio_actual_{symbol}", precio_actual)
+                        self.db.set(f"vol_relativo_{symbol}", vol_rel)
 
-        # Lógica de Ruptura de Rango (Volatility Breakout)
-        # Confirmación: Precio rompe el nivel + Volumen > 1.5x el promedio
-        if price > high_1h and volume > (avg_vol * 1.5):
-            return "LONG_BREAKOUT", high_1h, low_1h
-        elif price < low_1h and volume > (avg_vol * 1.5):
-            return "SHORT_BREAKOUT", high_1h, low_1h
+            except Exception as e:
+                print(f"❌ Error en el stream: {e}. Reintentando en 5 segundos...")
+                await asyncio.sleep(5)
 
-    except Exception:
-        # Silenciamos errores de procesamiento para mantener el flujo
-        pass
+    def evaluar_entrada(self, simbolo, precio_actual, vol_relativo):
+        key_precio = f"precio_base_{simbolo}"
+        precio_1h = self.db.get(key_precio)
 
-    return None
+        # Evitar división por cero y sincronizar precio inicial
+        if not precio_1h or float(precio_1h) <= 0:
+            if precio_actual > 0:
+                self.db.setex(key_precio, 3600, precio_actual)
+            return "Sincronizando...", "INFO"
 
-async def procesar_tick(data):
-    """
-    Extrae los datos del tick y actualiza las estadísticas en Redis.
-    """
-    try:
-        # Formato de stream directo: 's'=symbol, 'p'=price, 'q'=quantity/volume
-        symbol = data['s']
-        price = float(data['p'])
-        volume = float(data['q'])
+        precio_1h = float(precio_1h)
+        variacion = (precio_actual / precio_1h) - 1
 
-        # Incrementar contador global de ticks en Redis
-        await r.incr("stats:total_ticks")
+        if vol_relativo >= self.config['umbral_volumen']:
+            if precio_actual <= (precio_1h * self.config['max_subida_precio']):
+                return f"🔥 COMPRAR (+{variacion:.2%})", "BUY"
+            else:
+                return f"⚠️ TARDE (+{variacion:.2%})", "SKIP"
 
-        analysis = await update_range(symbol, price, volume)
-        if analysis:
-            alert_type, h, l = analysis
-            await r.incr("stats:alerts_today")
-            # Log de la ruptura detectada en la terminal
-            print(f"[{time.strftime('%H:%M:%S')}] 🎯 {symbol} {alert_type} | P: {price} | Rango: {l}-{h}")
+        return "Escaneando...", "SCAN"
 
-    except Exception:
-        pass
-
-async def iniciar_escaneo_binance(symbols):
-    """
-    Conexión directa vía Websockets con gestión de Keepalive (Ping/Pong).
-    """
-    # Construcción de la URL de streams multiplexados
-    streams = "/".join([f"{s.lower()}@trade" for s in symbols])
-    url = f"wss://stream.binance.com:9443/stream?streams={streams}"
-
-    while True:
-        print(f"📡 {time.strftime('%H:%M:%S')} - Conectando directamente a Binance...")
-        try:
-            # Configuración robusta para evitar timeouts de red
-            async with websockets.connect(
-                url,
-                ping_interval=20,
-                ping_timeout=30,
-                close_timeout=10
-            ) as ws:
-                print(f"✅ Sniper Directo Activo | Pares: {len(symbols)}")
-
-                while True:
-                    try:
-                        # Esperamos el mensaje con un timeout superior al ping_interval
-                        mensaje = await asyncio.wait_for(ws.recv(), timeout=40)
-                        data = json.loads(mensaje)
-
-                        if 'data' in data:
-                            # Delegamos el procesamiento a una tarea de fondo
-                            asyncio.create_task(procesar_tick(data['data']))
-
-                    except asyncio.TimeoutError:
-                        # Si hay silencio en el stream, verificamos si la conexión sigue viva
-                        print("🔍 Verificando latido del socket...")
-                        pong_waiter = await ws.ping()
-                        await asyncio.wait_for(pong_waiter, timeout=10)
-
-                    # Pequeña pausa para el loop asíncrono
-                    await asyncio.sleep(0)
-
-        except Exception as e:
-            print(f"⚠️ Error de conexión: {e}")
-            print("🔄 Reiniciando socket en 5 segundos...")
-            await asyncio.sleep(5)
+    def get_current_status(self):
+        stats = []
+        for s in self.symbols_raw:
+            p = float(self.db.get(f"precio_actual_{s}") or 0)
+            v = float(self.db.get(f"vol_relativo_{s}") or 1.0)
+            msg, tipo = self.evaluar_entrada(s, p, v)
+            stats.append({"pair": s, "price": p, "vol": v, "alert": msg, "type": tipo})
+        return stats

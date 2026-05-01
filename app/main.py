@@ -1,62 +1,43 @@
-import sys
 import os
 import asyncio
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
-import uvicorn
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from app.scanner import SniperScanner
 
-# Forzamos la ruta para asegurar que encuentre scanner.py en el entorno local
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from scanner import iniciar_escaneo_binance, r
+app = FastAPI()
 
-# CONFIGURACIÓN DE RUTAS SEGÚN TU IMAGEN
-# BASE_DIR es la carpeta 'app'
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# ROOT_DIR es la carpeta raíz donde está 'static'
-ROOT_DIR = os.path.dirname(BASE_DIR)
-# Apuntamos a la carpeta static que está fuera de app
-templates = Jinja2Templates(directory=os.path.join(ROOT_DIR, "static"))
+# Configuración de Activos (01 Mayo 2026)
+PARES = [
+    'PEPEUSDT', 'SHIBUSDT', '1000SATSUSDT', 'BONKUSDT', 'FLOKIUSDT',
+    'GALAUSDT', 'DOGEUSDT', 'LUNCUSDT', 'XECUSDT', 'WINUSDT'
+]
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    Gestiona el ciclo de vida de la aplicación.
-    Lanza el Sniper de Ruptura de Rangos al iniciar y lo detiene al cerrar.
-    """
-    pares = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']
+CONFIG = {
+    'umbral_volumen': 1.5,
+    'max_subida_precio': 1.02,
+}
 
-    # Tarea de fondo para el escáner asíncrono
-    task = asyncio.create_task(iniciar_escaneo_binance(pares))
+# Montar carpeta static para archivos CSS/JS/Images
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
-    yield
+# Instancia única del scanner
+scanner_instance = SniperScanner(symbols=PARES, config=CONFIG)
 
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        print("🛑 Sniper detenido correctamente.")
+@app.on_event("startup")
+async def startup_event():
+    # Iniciamos el loop de Binance en segundo plano
+    asyncio.create_task(scanner_instance.start())
 
-app = FastAPI(lifespan=lifespan)
+@app.get("/")
+async def get_index():
+    # Ruta absoluta para encontrar index.html dentro de /static
+    base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    index_path = os.path.join(base_path, "static", "index.html")
+    return FileResponse(index_path)
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """
-    Renderiza la interfaz obteniendo datos en tiempo real de Redis.
-    """
-    # Obtenemos las estadísticas de forma asíncrona desde Redis
-    ticks = await r.get("stats:total_ticks") or 0
-    alerts = await r.get("stats:alerts_today") or 0
-
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={
-            "ticks": "{:,}".format(int(ticks)),
-            "alerts": alerts
-        }
-    )
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+@app.get("/api/status")
+async def get_status():
+    # Endpoint que consume el JavaScript del frontend
+    return scanner_instance.get_current_status()
