@@ -2,37 +2,222 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
+    <title>Binance Simulator | Vertical Station</title>
     <style>
-        body { font-family: sans-serif; background: #0b0e11; color: #eaeaea; padding: 20px; }
-        table { width: 100%; border-collapse: collapse; background: #1e2329; border-radius: 4px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2b3139; }
-        .BUY { color: #02c076; font-weight: bold; background: rgba(2, 192, 118, 0.1); }
-        .SKIP { color: #f0b90b; }
-        .up { color: #02c076; }
-        .down { color: #f84960; }
+        /* Reset y Layout Base */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            font-size: 11px;
+        }
+
+        /* Tipografía para números (alineación perfecta) */
+        .num { font-family: 'Courier New', monospace; text-align: right; }
+
+        /* Contenedor Superior */
+        .header-panel {
+            height: 35px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #1a1a1a;
+            padding: 0 15px;
+            border-bottom: 1px solid #333;
+        }
+
+        .logo { color: #f0b90b; font-weight: bold; font-size: 13px; letter-spacing: 1px; }
+
+        /* Grid de dos columnas */
+        .main-container {
+            display: flex;
+            flex-direction: row;
+            height: calc(100vh - 35px);
+            gap: 8px;
+            padding: 8px;
+        }
+
+        .section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #141414;
+            border: 1px solid #222;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .section-header {
+            background: #1a1a1a;
+            padding: 6px 10px;
+            color: #f0b90b;
+            font-weight: bold;
+            font-size: 10px;
+            text-transform: uppercase;
+            border-bottom: 1px solid #333;
+        }
+
+        .table-wrapper {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            position: sticky; top: 0; background: #222;
+            color: #777; font-size: 9px; padding: 6px 8px;
+            text-align: left; z-index: 10; border-bottom: 1px solid #333;
+        }
+        td { padding: 5px 8px; border-bottom: 1px solid #1a1a1a; }
+
+        /* Estados de Mercado */
+        .bull { color: #00ff7b; font-weight: bold; }
+        .bear { color: #ff3b3b; font-weight: bold; }
+        .symbol { color: #fff; font-weight: bold; text-align: left; }
+        .ratio-gold { color: #f0b90b; font-weight: bold; }
+
+        /* Botones Mini */
+        .btn {
+            padding: 3px 8px; border-radius: 2px; cursor: pointer;
+            font-size: 10px; border: none; font-weight: bold;
+            transition: 0.2s;
+        }
+        .btn-buy { background: #00ff7b; color: #000; }
+        .btn-buy:hover { background: #00cc62; }
+        .btn-sell { background: #ff3b3b; color: #fff; }
+        .btn-sell:hover { background: #cc2f2f; }
+
+        /* Animación de Alerta */
+        @keyframes pulse { 0% { background: #141414; } 50% { background: #2a2400; } 100% { background: #141414; } }
+        .high-imbalance { animation: pulse 1s infinite; }
     </style>
 </head>
 <body>
-    <h2>🚀 Sniper Volatility V2 | Monitor Local</h2>
-    <div id="dashboard">Cargando...</div>
+
+    <div class="header-panel">
+        <div class="logo">⚡ MICRO-SCANNER</div>
+        <div id="wallet-display" class="num">Cargando datos...</div>
+    </div>
+
+    <div class="main-container">
+        <!-- Columna 1: Mercado -->
+        <div class="section">
+            <div class="section-header">Mercado en Vivo</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="text-align:left">PAREJA</th>
+                            <th style="text-align:right">BID</th>
+                            <th style="text-align:right">ASK</th>
+                            <th style="text-align:right">RATIO</th>
+                            <th style="text-align:center">ACC</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ticker-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Columna 2: Posiciones Abiertas -->
+        <div class="section">
+            <div class="section-header">Mis Posiciones</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="text-align:left">PAREJA</th>
+                            <th style="text-align:right">CANT</th>
+                            <th style="text-align:right">COMPRA</th>
+                            <th style="text-align:right">ACTUAL</th>
+                            <th style="text-align:right">PNL %</th>
+                            <th style="text-align:center">ACC</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positions-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 
     <script>
-        let prices = {};
+        // Función para ejecutar trades (Buy/Sell)
+        async function trade(action, symbol, price) {
+            try {
+                await fetch(`/api/simulate/${action}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({symbol, price})
+                });
+                update(); // Actualización inmediata tras la acción
+            } catch (e) { console.error("Trade Error:", e); }
+        }
+
+        // Función Principal de Actualización
         async function update() {
             try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                let html = '<table><tr><th>PAR</th><th>PRECIO</th><th>VOL REL</th><th>ESTADO</th></tr>';
-                data.forEach(i => {
-                    const cls = prices[i.pair] < i.price ? 'up' : (prices[i.pair] > i.price ? 'down' : '');
-                    prices[i.pair] = i.price;
-                    html += `<tr><td>${i.pair}</td><td class="${cls}">${i.price.toFixed(8)}</td>
-                             <td>${i.vol.toFixed(4)}x</td><td class="${i.type}">${i.alert}</td></tr>`;
+                const resStatus = await fetch('/api/status');
+                const status = await resStatus.json();
+                const resPos = await fetch('/api/positions');
+                const positions = await resPos.json();
+
+                // 1. Actualizar Wallet en el Header
+                const w = status.wallet;
+                document.getElementById('wallet-display').innerHTML =
+                    `BAL: <span style="color:#fff">$${w.balance.toFixed(2)}</span> |
+                     PNL: <span class="${w.pnl >= 0 ? 'bull' : 'bear'}">${w.pnl.toFixed(2)}%</span>`;
+
+                // 2. Renderizar Tabla de Mercado
+                const tickerBody = document.getElementById('ticker-body');
+                tickerBody.innerHTML = '';
+                status.market.forEach(item => {
+                    const row = document.createElement('tr');
+                    if(item.imbalance >= 15) row.classList.add('high-imbalance');
+
+                    row.innerHTML = `
+                        <td class="symbol">${item.symbol.replace('USDT','')}</td>
+                        <td class="num">${item.bid.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                        <td class="num">${item.ask.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                        <td class="num ${item.imbalance >= 15 ? 'ratio-gold' : ''}">${item.imbalance.toFixed(1)}x</td>
+                        <td style="text-align:center">
+                            <button class="btn btn-buy" onclick="trade('buy','${item.symbol}',${item.ask})">B</button>
+                        </td>
+                    `;
+                    tickerBody.appendChild(row);
                 });
-                document.getElementById('dashboard').innerHTML = html + '</table>';
-            } catch (e) {}
+
+                // 3. Renderizar Tabla de Posiciones
+                const posBody = document.getElementById('positions-body');
+                posBody.innerHTML = '';
+                for (const [symbol, raw] of Object.entries(positions)) {
+                    const p = JSON.parse(raw);
+                    const m = status.market.find(x => x.symbol === symbol);
+                    const curPrice = m ? m.bid : p.buy_price;
+                    const pnl = ((curPrice - p.buy_price) / p.buy_price) * 100;
+
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td class="symbol">${symbol.replace('USDT','')}</td>
+                        <td class="num">${p.amount.toFixed(4)}</td>
+                        <td class="num">${p.buy_price.toFixed(2)}</td>
+                        <td class="num">${curPrice.toFixed(2)}</td>
+                        <td class="num ${pnl >= 0 ? 'bull' : 'bear'}">${pnl.toFixed(2)}%</td>
+                        <td style="text-align:center">
+                            <button class="btn btn-sell" onclick="trade('sell','${symbol}',${curPrice})">S</button>
+                        </td>
+                    `;
+                    posBody.appendChild(row);
+                }
+            } catch (e) { console.error("Update Error:", e); }
         }
+
+        // Intervalo de refresco: 1 segundo
         setInterval(update, 1000);
+        update();
     </script>
 </body>
 </html>

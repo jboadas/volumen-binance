@@ -1,74 +1,69 @@
 import asyncio
-import datetime
 import json
 import redis
 import websockets
 
-class SniperScanner:
-    def __init__(self, symbols, config):
-        self.symbols_raw = [s.upper() for s in symbols]
-        self.symbols_low = [s.lower() for s in symbols]
-        self.config = config
-        self.db = redis.Redis(host='localhost', port=6379, decode_responses=True)
+class BinanceScanner:
+    def __init__(self):
+        # decode_responses=True para leer strings directamente de Redis
+        self.r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        self.symbols = [
+            'btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt',
+            'dogeusdt', 'adausdt', 'trxusdt', 'shibusdt', 'dotusdt'
+        ]
+        self.base_url = "wss://stream.binance.com:9443/ws"
+        self.streams = "/".join([f"{s}@bookTicker" for s in self.symbols])
 
-    async def start(self):
-        # Ticker stream de Binance para los 10 pares
-        streams = "/".join([f"{s}@ticker" for s in self.symbols_low])
-        uri = f"wss://stream.binance.com:9443/ws/{streams}"
+    async def start_scanning(self):
+        url = f"{self.base_url}/{self.streams}"
+        print(f"📡 Conectando a Binance Streams...")
 
-        while True:
+        while True: # Bucle de reconexión automática
             try:
-                async with websockets.connect(uri) as websocket:
+                async with websockets.connect(url) as websocket:
+                    market_data = {s.upper(): {} for s in self.symbols}
+                    print("✅ Conexión establecida. Escaneando ratios...")
+
                     while True:
-                        message = await websocket.recv()
-                        data = json.loads(message)
+                        try:
+                            raw_data = await websocket.recv()
+                            data = json.loads(raw_data)
 
-                        symbol = data['s']
-                        precio_actual = float(data['c'])
-                        vol_24h = float(data['q']) # Volumen en USDT
+                            symbol = data['s']
+                            bid_p, bid_q = float(data['b']), float(data['B'])
+                            ask_p, ask_q = float(data['a']), float(data['A'])
 
-                        # Lógica de Impulso de Volumen
-                        key_v_prev = f"vol_prev_{symbol}"
-                        vol_prev = float(self.db.get(key_v_prev) or vol_24h)
+                            # Cálculo de Imbalance (Ratio de presión)
+                            imbalance = bid_q / ask_q if ask_q > 0 else 1.0
 
-                        # Calculamos el ratio de incremento
-                        impulso = (vol_24h / vol_prev) if vol_prev > 0 else 1.0
+                            trend = "NEUTRAL"
+                            if imbalance > 2.5: trend = "BULL"
+                            elif imbalance < 0.4: trend = "BEAR"
 
-                        # Actualizamos Redis
-                        self.db.set(f"precio_actual_{symbol}", precio_actual)
-                        self.db.set(f"vol_relativo_{symbol}", round(impulso, 4))
-                        # Guardamos el volumen actual como base para el siguiente tick (expira en 1 min)
-                        self.db.setex(key_v_prev, 60, vol_24h)
+                            market_data[symbol] = {
+                                "symbol": symbol,
+                                "bid": bid_p,
+                                "ask": ask_p,
+                                "imbalance": imbalance,
+                                "trend": trend
+                            }
 
-            except Exception:
+                            # Guardamos el estado del mercado como STRING JSON
+                            self.r.set("market_status", json.dumps(list(market_data.values())))
+
+                        except (websockets.exceptions.ConnectionClosed, asyncio.exceptions.CancelledError):
+                            break
+                        except Exception as e:
+                            print(f"❌ Error en datos: {e}")
+                            await asyncio.sleep(1)
+
+            except Exception as e:
+                print(f"❌ Error de conexión: {e}. Reintentando en 5s...")
                 await asyncio.sleep(5)
 
-    def evaluar_entrada(self, simbolo, precio_actual, vol_relativo):
-        key_precio = f"precio_base_{simbolo}"
-        precio_1h = self.db.get(key_precio)
-
-        if not precio_1h or float(precio_1h) <= 0:
-            if precio_actual > 0:
-                self.db.setex(key_precio, 3600, precio_actual)
-            return "Sincronizando...", "INFO"
-
-        precio_1h = float(precio_1h)
-        variacion = (precio_actual / precio_1h) - 1
-
-        # Disparo basado en tu configuración (Umbral 1.5x)
-        if vol_relativo >= self.config['umbral_volumen']:
-            if precio_actual <= (precio_1h * self.config['max_subida_precio']):
-                return f"🔥 COMPRAR (+{variacion:.2%})", "BUY"
-            else:
-                return f"⚠️ TARDE (+{variacion:.2%})", "SKIP"
-
-        return "Escaneando...", "SCAN"
-
-    def get_current_status(self):
-        stats = []
-        for s in self.symbols_raw:
-            p = float(self.db.get(f"precio_actual_{s}") or 0)
-            v = float(self.db.get(f"vol_relativo_{s}") or 1.0)
-            msg, tipo = self.evaluar_entrada(s, p, v)
-            stats.append({"pair": s, "price": p, "vol": v, "alert": msg, "type": tipo})
-        return stats
+if __name__ == "__main__":
+    scanner = BinanceScanner()
+    try:
+        asyncio.run(scanner.start_scanning())
+    except KeyboardInterrupt:
+        print("\n🛑 Scanner detenido.")

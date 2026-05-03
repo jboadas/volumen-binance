@@ -1,20 +1,12 @@
 #!/bin/bash
-# Verificar si Redis ya está corriendo
-if ! pgrep -x "redis-server" > /dev/null
-then
-    echo "🚀 Redis no está iniciado. Arrancando..."
-    sudo service redis-server start
-else
-    echo "✅ Redis ya está en ejecución."
-fi
-# Mensaje visual para saber que está arrancando
-echo "🚀 Arrancando el Scanner de Volumen de Binance..."
+# 1. Activar el entorno virtual
+source venv/bin/activate
 
-# Si usas un entorno virtual (venv), lo activamos automáticamente
-if [ -d "venv" ]; then
-    echo "📦 Activando entorno virtual..."
-    source venv/bin/activate
+# 2. Asegurar que Redis esté listo
+if ! redis-cli ping > /dev/null 2>&1; then
+    redis-server --daemonize yes
+    sleep 1
 fi
 
-# Ejecutamos el servidor
-uvicorn app.main:app --reload --port 8000
+# 3. Lanzar la aplicación integrada
+python3 app/main.py
