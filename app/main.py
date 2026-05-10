@@ -54,6 +54,10 @@ async def simulate_buy(request: Request):
     if wallet['balance'] < invest:
         return {"status": "error", "msg": "Saldo insuficiente para trade de $10"}
 
+    # Check if position already exists
+    if r.hexists("open_positions", symbol):
+        return {"status": "error", "msg": "Ya tienes una posición abierta en este símbolo"}
+
     qty = invest / price
     wallet['balance'] -= invest
     r.set("wallet", json.dumps(wallet))
@@ -68,22 +72,35 @@ async def simulate_buy(request: Request):
 @app.post("/api/simulate/sell")
 async def simulate_sell(request: Request):
     params = await request.json()
-    symbol, sell_price = params['symbol'], params['price']
+    symbol = params['symbol']
+    # Aseguramos que el precio de venta sea un número
+    sell_price = float(params['price'])
 
     raw_pos = r.hget("open_positions", symbol)
-    if not raw_pos: return {"status": "error"}
+    if not raw_pos: return {"status": "error", "message": "No position"}
 
     pos = json.loads(raw_pos)
-    val_retorno = pos['amount'] * sell_price
-    pct_ganancia = ((sell_price - pos['buy_price']) / pos['buy_price']) * 100
 
-    wallet = json.loads(r.get("wallet"))
-    wallet['balance'] += val_retorno
-    wallet['pnl'] += pct_ganancia
+    # Aseguramos que la cantidad de monedas sea un número
+    val_retorno = float(pos['amount']) * sell_price
+
+    # Calculamos el porcentaje (solo para el historial/log)
+    buy_price = float(pos['buy_price'])
+    pct_ganancia = ((sell_price - buy_price) / buy_price) * 100
+
+    # Manejo seguro de la billetera
+    wallet_raw = r.get("wallet")
+    wallet = json.loads(wallet_raw) if wallet_raw else {"balance": 100.0, "pnl": 0.0}
+
+    # Actualizamos el balance
+    wallet['balance'] = float(wallet['balance']) + val_retorno
+    wallet['pnl'] = float(wallet['pnl']) + pct_ganancia
+
+    # Guardamos de vuelta en Redis
     r.set("wallet", json.dumps(wallet))
 
     r.hdel("open_positions", symbol)
-    return {"status": "ok"}
+    return {"status": "ok", "new_balance": wallet['balance']}
 
 if __name__ == "__main__":
     import uvicorn

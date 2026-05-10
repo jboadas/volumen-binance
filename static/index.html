@@ -184,7 +184,7 @@
                         <td class="num">${item.ask.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
                         <td class="num ${item.imbalance >= 15 ? 'ratio-gold' : ''}">${item.imbalance.toFixed(1)}x</td>
                         <td style="text-align:center">
-                            <button class="btn btn-buy" onclick="trade('buy','${item.symbol}',${item.ask})">B</button>
+                            <button class="btn btn-buy" onclick="trade('buy','${item.symbol}',${(item.bid + item.ask) / 2})">B</button>
                         </td>
                     `;
                     tickerBody.appendChild(row);
@@ -196,7 +196,7 @@
                 for (const [symbol, raw] of Object.entries(positions)) {
                     const p = JSON.parse(raw);
                     const m = status.market.find(x => x.symbol === symbol);
-                    const curPrice = m ? m.bid : p.buy_price;
+                    const curPrice = m ? (m.bid + m.ask) / 2 : p.buy_price;
                     const pnl = ((curPrice - p.buy_price) / p.buy_price) * 100;
 
                     const row = document.createElement('tr');
