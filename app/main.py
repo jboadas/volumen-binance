@@ -8,11 +8,14 @@ from fastapi.responses import HTMLResponse
 app = FastAPI()
 r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 
+scanner_process = None
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.on_event("startup")
 async def startup_event():
-    subprocess.Popen(["python3", "app/scanner.py"])
+    global scanner_process
+    scanner_process = subprocess.Popen(["python3", "app/scanner.py"])
 
     keys_map = {"wallet": "string", "market_status": "string", "open_positions": "hash"}
     for k, t in keys_map.items():
@@ -23,6 +26,13 @@ async def startup_event():
     if not r.exists("wallet"):
         r.set("wallet", json.dumps({"balance": 100.0, "pnl": 0.0}))
     print("🚀 Gestión de Capital: Máximo $100 | Trades de $10.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global scanner_process
+    if scanner_process:
+        scanner_process.terminate()
+        scanner_process.wait()
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
