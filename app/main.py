@@ -83,8 +83,7 @@ async def monitoring_loop():
             continue
         market = {item['symbol']: item for item in json.loads(market_raw)}
 
-        wallet = load_wallet()
-
+        # --- PROCESAR VENTAS ---
         for symbol, pos_raw in positions.items():
             pos = json.loads(pos_raw)
             if symbol not in market:
@@ -94,6 +93,9 @@ async def monitoring_loop():
 
             pnl = compute_unrealized_net_pct(pos, cur_price)
             if pnl >= 1.5 or pnl <= -0.5:
+                # Volvemos a leer la wallet justo antes de transaccionar para evitar desfasajes
+                wallet = load_wallet()
+
                 amount = float(pos['amount'])
                 cost = float(pos.get('cost', 0.0))
                 val_retorno, sell_price_effective = compute_effective_sell_return(amount, cur_price)
@@ -107,10 +109,15 @@ async def monitoring_loop():
 
                 print(f"🤖 BOT: Vendiendo {symbol} a {sell_price_effective:.2f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
+        # --- PROCESAR COMPRAS ---
         for item in market.values():
             symbol = item['symbol']
             imbalance = float(item['imbalance'])
-            if imbalance >= 15 and symbol not in positions and wallet['balance'] >= 10.0:
+
+            # Volvemos a leer la wallet fresca para ver si las ventas de arriba nos dieron saldo
+            wallet = load_wallet()
+
+            if imbalance >= 15 and symbol not in r.hkeys("open_positions") and wallet['balance'] >= 10.0:
                 price = (float(item['bid']) + float(item['ask'])) / 2
                 invest = 10.0
                 qty, buy_price_effective = compute_effective_buy_amount(invest, price)
