@@ -3,302 +3,479 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Binance Simulator | Vertical Station</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Micro-Scanner Crypto Bot</title>
     <style>
-        /* Reset y Layout Base */
         * {
+            box-sizing: border-box;
             margin: 0;
             padding: 0;
-            box-sizing: border-box;
         }
 
-        html,
         body {
-            height: 100vh;
-            width: 100vw;
-            overflow: hidden;
-            background: #0d0d0d;
-            color: #e0e0e0;
-            font-family: 'Segoe UI', Tahoma, sans-serif;
-            font-size: 11px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #12141c;
+            color: #e2e8f0;
+            padding: 10px;
+            line-height: 1.3;
+            overflow-x: hidden;
         }
 
-        /* Tipografía para números (alineación perfecta) */
-        .num {
-            font-family: 'Courier New', monospace;
-            text-align: right;
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
         }
 
-        /* Contenedor Superior */
-        .header-panel {
-            height: 35px;
+        header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: #1a1a1a;
-            padding: 0 15px;
-            border-bottom: 1px solid #333;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #2d3748;
+            margin-bottom: 12px;
         }
 
-        .logo {
-            color: #f0b90b;
-            font-weight: bold;
-            font-size: 13px;
-            letter-spacing: 1px;
+        h1 {
+            font-size: 18px;
+            color: #f7fafc;
+            font-weight: 600;
         }
 
-        /* Grid de dos columnas */
-        .main-container {
+        .wallet-panel {
+            background: #1a202c;
+            border: 1px solid #2d3748;
+            padding: 6px 15px;
+            border-radius: 6px;
             display: flex;
-            flex-direction: row;
-            height: calc(100vh - 35px);
-            gap: 8px;
-            padding: 8px;
+            gap: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
 
-        .section {
-            flex: 1;
+        .wallet-metric {
             display: flex;
             flex-direction: column;
-            background: #141414;
-            border: 1px solid #222;
-            border-radius: 4px;
-            overflow: hidden;
         }
 
-        .section-header {
-            background: #1a1a1a;
-            padding: 6px 10px;
-            color: #f0b90b;
-            font-weight: bold;
+        .metric-label {
             font-size: 10px;
+            color: #a0aec0;
             text-transform: uppercase;
-            border-bottom: 1px solid #333;
+            letter-spacing: 0.5px;
+            margin-bottom: 1px;
+        }
+
+        .metric-value {
+            font-size: 15px;
+            font-weight: bold;
+        }
+
+        .value-neutral {
+            color: #f7fafc;
+        }
+
+        .value-positive {
+            color: #38a169;
+        }
+
+        .value-negative {
+            color: #e53e3e;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 12px;
+        }
+
+        @media (min-width: 992px) {
+            .dashboard-grid {
+                grid-template-columns: 1.5fr 1fr;
+            }
+        }
+
+        .panel {
+            background: #1a202c;
+            border: 1px solid #2d3748;
+            border-radius: 6px;
+            padding: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
         }
 
         .table-wrapper {
-            flex: 1;
+            max-height: 450px;
             overflow-y: auto;
+            border: 1px solid #2d3748;
+            border-radius: 4px;
+            background: #171e29;
+        }
+
+        .table-wrapper::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        .table-wrapper::-webkit-scrollbar-track {
+            background: #1a202c;
+        }
+
+        .table-wrapper::-webkit-scrollbar-thumb {
+            background: #4a5568;
+            border-radius: 2px;
+        }
+
+        .table-wrapper::-webkit-scrollbar-thumb:hover {
+            background: #718096;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
+            text-align: left;
+            font-size: 11px;
+            /* Fuente reducida para modo terminal compacto */
+        }
+
+        thead th {
+            position: sticky;
+            top: 0;
+            background: #1a202c;
+            z-index: 2;
+            box-shadow: inset 0 -1px 0 #2d3748;
         }
 
         th {
-            position: sticky;
-            top: 0;
-            background: #222;
-            color: #777;
+            color: #a0aec0;
+            font-weight: 500;
+            padding: 6px 5px;
+            text-transform: uppercase;
             font-size: 9px;
-            padding: 6px 8px;
-            text-align: left;
-            z-index: 10;
-            border-bottom: 1px solid #333;
+            letter-spacing: 0.5px;
         }
 
         td {
-            padding: 5px 8px;
-            border-bottom: 1px solid #1a1a1a;
+            padding: 5px 5px;
+            border-bottom: 1px solid #2d3748;
+            color: #cbd5e0;
+            vertical-align: middle;
         }
 
-        /* Estados de Mercado */
-        .bull {
-            color: #00ff7b;
+        tr:hover {
+            background-color: #212936;
+        }
+
+        .pnl-neutral {
+            color: #cbd5e0;
+        }
+
+        .pnl-positive {
+            color: #48bb78;
+            font-weight: 600;
+        }
+
+        .row-high-risk {
+            background-color: rgba(229, 62, 62, 0.10) !important;
+            animation: pulse-border 2s infinite ease-in-out;
+        }
+
+        .pnl-high-risk {
+            color: #f56565 !important;
             font-weight: bold;
         }
 
-        .bear {
-            color: #ff3b3b;
-            font-weight: bold;
-        }
-
-        .symbol {
-            color: #fff;
-            font-weight: bold;
-            text-align: left;
-        }
-
-        .ratio-gold {
-            color: #f0b90b;
-            font-weight: bold;
-        }
-
-        /* Botones Mini */
-        .btn {
-            padding: 3px 8px;
+        .badge-risk {
+            background-color: #e53e3e;
+            color: white;
+            padding: 1px 3px;
             border-radius: 2px;
-            cursor: pointer;
-            font-size: 10px;
-            border: none;
+            font-size: 8px;
             font-weight: bold;
-            transition: 0.2s;
+            text-transform: uppercase;
+            margin-left: 3px;
+            display: inline-block;
+        }
+
+        .market-badge {
+            background: #2d3748;
+            padding: 1px 4px;
+            border-radius: 3px;
+            font-size: 10px;
+            color: #edf2f7;
+            font-weight: 600;
+        }
+
+        .btn-action {
+            padding: 2px 6px;
+            border: none;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: bold;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.15s, transform 0.1s;
         }
 
         .btn-buy {
-            background: #00ff7b;
-            color: #000;
+            background-color: #2f855a;
+            color: #fff;
         }
 
         .btn-buy:hover {
-            background: #00cc62;
+            background-color: #38a169;
+        }
+
+        .btn-buy:active {
+            transform: scale(0.95);
         }
 
         .btn-sell {
-            background: #ff3b3b;
+            background-color: #c53030;
             color: #fff;
         }
 
         .btn-sell:hover {
-            background: #cc2f2f;
+            background-color: #e53e3e;
         }
 
-        /* Animación de Alerta */
-        @keyframes pulse {
+        .btn-sell:active {
+            transform: scale(0.95);
+        }
+
+        @keyframes pulse-border {
             0% {
-                background: #141414;
+                background-color: rgba(229, 62, 62, 0.08);
             }
 
             50% {
-                background: #2a2400;
+                background-color: rgba(229, 62, 62, 0.16);
             }
 
             100% {
-                background: #141414;
+                background-color: rgba(229, 62, 62, 0.08);
             }
         }
 
-        .high-imbalance {
-            animation: pulse 1s infinite;
+        .empty-state {
+            text-align: center;
+            color: #718096;
+            padding: 15px 0;
+            font-style: italic;
         }
     </style>
 </head>
 
 <body>
-
-    <div class="header-panel">
-        <div class="logo">⚡ MICRO-SCANNER</div>
-        <div id="wallet-display" class="num">Cargando datos...</div>
-    </div>
-
-    <div class="main-container">
-        <!-- Columna 1: Mercado -->
-        <div class="section">
-            <div class="section-header">Mercado en Vivo</div>
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr>
-                            <th style="text-align:left">PAREJA</th>
-                            <th style="text-align:right">BID</th>
-                            <th style="text-align:right">ASK</th>
-                            <th style="text-align:right">RATIO</th>
-                            <th style="text-align:center">ACC</th>
-                        </tr>
-                    </thead>
-                    <tbody id="ticker-body"></tbody>
-                </table>
+    <div class="container">
+        <header>
+            <div>
+                <h1>Micro-Scanner</h1>
             </div>
-        </div>
+            <div class="wallet-panel">
+                <div class="wallet-metric">
+                    <span class="metric-label">Balance</span>
+                    <span id="wallet-balance" class="metric-value value-neutral">$0.00</span>
+                </div>
+                <div class="wallet-metric">
+                    <span class="metric-label">PNL</span>
+                    <span id="wallet-pnl" class="metric-value value-neutral">0.00%</span>
+                </div>
+            </div>
+        </header>
 
-        <!-- Columna 2: Posiciones Abiertas -->
-        <div class="section">
-            <div class="section-header">Mis Posiciones</div>
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr>
-                            <th style="text-align:left">PAREJA</th>
-                            <th style="text-align:right">CANT</th>
-                            <th style="text-align:right">COMPRA</th>
-                            <th style="text-align:right">ACTUAL</th>
-                            <th style="text-align:right">PNL %</th>
-                            <th style="text-align:center">ACC</th>
-                        </tr>
-                    </thead>
-                    <tbody id="positions-body"></tbody>
-                </table>
+        <div class="dashboard-grid">
+            <div class="panel">
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Símbolo</th>
+                                <th>Entrada</th>
+                                <th>Actual</th>
+                                <th>Qty</th>
+                                <th>Cost</th>
+                                <th>PNL %</th>
+                                <th>Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-tbody">
+                            <tr>
+                                <td colspan="7" class="empty-state">Cargando...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Símbolo</th>
+                                <th>Mid Price</th>
+                                <th>Imbalance</th>
+                                <th>Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody id="market-tbody">
+                            <tr>
+                                <td colspan="4" class="empty-state">Cargando...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        // Función para ejecutar trades (Buy/Sell)
-        async function trade(action, symbol, price) {
+        async function manualBuy(symbol, price) {
+            if (!confirm(`¿Forzar COMPRA manual de $10 en ${symbol}?`)) return;
             try {
-                await fetch(`/api/simulate/${action}`, {
+                const res = await fetch('/api/simulate/buy', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ symbol, price })
+                    body: JSON.stringify({ symbol: symbol, price: price })
                 });
-                update(); // Actualización inmediata tras la acción
-            } catch (e) { console.error("Trade Error:", e); }
+                const data = await res.json();
+                if (data.status === "error") alert(`Error: ${data.msg || data.message}`);
+                fetchStatus();
+                fetchPositions();
+            } catch (err) {
+                console.error(err);
+            }
         }
 
-        // Función Principal de Actualización
-        async function update() {
+        async function manualSell(symbol, price) {
+            if (!confirm(`¿Forzar VENTA manual de ${symbol}?`)) return;
             try {
-                const resStatus = await fetch('/api/status');
-                const status = await resStatus.json();
-                const resPos = await fetch('/api/positions');
-                const positions = await resPos.json();
-
-                // 1. Actualizar Wallet en el Header
-                const w = status.wallet;
-                document.getElementById('wallet-display').innerHTML =
-                    `BAL: <span style="color:#fff">$${w.balance.toFixed(2)}</span> |
-                     PNL: <span class="${w.pnl >= 0 ? 'bull' : 'bear'}">${w.pnl.toFixed(2)}%</span>`;
-
-                // 2. Renderizar Tabla de Mercado
-                const tickerBody = document.getElementById('ticker-body');
-                tickerBody.innerHTML = '';
-                status.market.forEach(item => {
-                    const row = document.createElement('tr');
-                    if (item.imbalance >= 15) row.classList.add('high-imbalance');
-
-                    row.innerHTML = `
-                        <td class="symbol">${item.symbol.replace('USDT', '')}</td>
-                        <td class="num">${item.bid.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                        <td class="num">${item.ask.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                        <td class="num ${item.imbalance >= 15 ? 'ratio-gold' : ''}">${item.imbalance.toFixed(1)}x</td>
-                        <td style="text-align:center">
-                            <button class="btn btn-buy" onclick="trade('buy','${item.symbol}',${(item.bid + item.ask) / 2})">B</button>
-                        </td>
-                    `;
-                    tickerBody.appendChild(row);
+                const res = await fetch('/api/simulate/sell', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: symbol, price: price })
                 });
-
-                // 3. Renderizar Tabla de Posiciones
-                const posBody = document.getElementById('positions-body');
-                posBody.innerHTML = '';
-                for (const [symbol, raw] of Object.entries(positions)) {
-                    const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                    const m = status.market.find(x => x.symbol === symbol);
-                    const curPrice = m ? (m.bid + m.ask) / 2 : p.buy_price;
-                    const pnl = typeof p.unrealized_pnl === 'number'
-                        ? p.unrealized_pnl
-                        : ((curPrice - p.buy_price) / p.buy_price) * 100;
-
-                    const row = document.createElement('tr');
-                    row.innerHTML = `
-                        <td class="symbol">${symbol.replace('USDT', '')}</td>
-                        <td class="num">${p.amount.toFixed(4)}</td>
-                        <td class="num">${p.buy_price.toFixed(2)}</td>
-                        <td class="num">${curPrice.toFixed(2)}</td>
-                        <td class="num ${pnl >= 0 ? 'bull' : 'bear'}">${pnl.toFixed(2)}%</td>
-                        <td style="text-align:center">
-                            <button class="btn btn-sell" onclick="trade('sell','${symbol}',${curPrice})">S</button>
-                        </td>
-                    `;
-                    posBody.appendChild(row);
-                }
-            } catch (e) { console.error("Update Error:", e); }
+                const data = await res.json();
+                if (data.status === "error") alert(`Error: ${data.message}`);
+                fetchStatus();
+                fetchPositions();
+            } catch (err) {
+                console.error(err);
+            }
         }
 
-        // Intervalo de refresco: 1 segundo
-        setInterval(update, 1000);
-        update();
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+
+                const wallet = data.wallet || { balance: 0.0, pnl: 0.0 };
+                document.getElementById('wallet-balance').innerText = `$${parseFloat(wallet.balance).toFixed(2)}`;
+
+                const pnlElement = document.getElementById('wallet-pnl');
+                const currentPnl = parseFloat(wallet.pnl);
+                pnlElement.innerText = `${currentPnl >= 0 ? '+' : ''}${currentPnl.toFixed(2)}%`;
+
+                if (currentPnl > 0) {
+                    pnlElement.className = 'metric-value value-positive';
+                } else if (currentPnl < 0) {
+                    pnlElement.className = 'metric-value value-negative';
+                } else {
+                    pnlElement.className = 'metric-value value-neutral';
+                }
+
+                const marketTbody = document.getElementById('market-tbody');
+                if (data.market && data.market.length > 0) {
+                    let marketHtml = '';
+                    data.market.forEach(item => {
+                        const midPrice = (parseFloat(item.bid) + parseFloat(item.ask)) / 2;
+                        marketHtml += `
+                            <tr>
+                                <td><span class="market-badge">${item.symbol}</span></td>
+                                <td>${midPrice.toFixed(4)}</td>
+                                <td style="font-weight: 500; color: ${parseFloat(item.imbalance) >= 15 ? '#48bb78' : '#cbd5e0'}">
+                                    ${parseFloat(item.imbalance).toFixed(1)}%
+                                </td>
+                                <td>
+                                    <button class="btn-action btn-buy" onclick="manualBuy('${item.symbol}', ${midPrice})">Buy</button>
+                                </td>
+                            </tr>
+                        `;
+                    });
+                    marketTbody.innerHTML = marketHtml;
+                } else {
+                    marketTbody.innerHTML = `<tr><td colspan="4" class="empty-state">No hay datos</td></tr>`;
+                }
+            } catch (error) {
+                console.error("Error status:", error);
+            }
+        }
+
+        async function fetchPositions() {
+            try {
+                const response = await fetch('/api/positions');
+                const positions = await response.json();
+                const positionsTbody = document.getElementById('positions-tbody');
+
+                if (Object.keys(positions).length > 0) {
+                    let positionsHtml = '';
+
+                    for (const symbol in positions) {
+                        const pos = positions[symbol];
+                        const entryPrice = parseFloat(pos.entry_price_effective || pos.buy_price || 0);
+                        const currentPrice = parseFloat(pos.current_price || 0);
+                        const amount = parseFloat(pos.amount || 0);
+                        const cost = parseFloat(pos.cost || 0);
+
+                        let pnlText = "0.00%";
+                        let pnlClass = "pnl-neutral";
+                        let rowClass = "";
+                        let riskBadge = "";
+
+                        if (pos.unrealized_pnl !== null && pos.unrealized_pnl !== undefined) {
+                            const pnl = parseFloat(pos.unrealized_pnl);
+                            pnlText = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%`;
+
+                            if (pnl > 0) {
+                                pnlClass = "pnl-positive";
+                            } else if (pnl <= -0.35) {
+                                pnlClass = "pnl-high-risk";
+                                rowClass = "row-high-risk";
+                                riskBadge = `<span class="badge-risk">Riesgo</span>`;
+                            } else if (pnl < 0) {
+                                pnlClass = "value-negative";
+                            }
+                        }
+
+                        positionsHtml += `
+                            <tr class="${rowClass}">
+                                <td style="font-weight: 600; color: #fff;">${symbol} ${riskBadge}</td>
+                                <td>${entryPrice.toFixed(4)}</td>
+                                <td>${currentPrice > 0 ? currentPrice.toFixed(4) : '...'}</td>
+                                <td>${amount.toFixed(5)}</td>
+                                <td>$${cost.toFixed(1)}</td>
+                                <td class="${pnlClass}">${pnlText}</td>
+                                <td>
+                                    <button class="btn-action btn-sell" onclick="manualSell('${symbol}', ${currentPrice})">Sell</button>
+                                </td>
+                            </tr>
+                        `;
+                    }
+                    positionsTbody.innerHTML = positionsHtml;
+                } else {
+                    positionsTbody.innerHTML = `<tr><td colspan="7" class="empty-state">No hay posiciones abiertas</td></tr>`;
+                }
+            } catch (error) {
+                console.error("Error posiciones:", error);
+            }
+        }
+
+        setInterval(fetchStatus, 2000);
+        setInterval(fetchPositions, 1000);
+
+        window.onload = () => {
+            fetchStatus();
+            fetchPositions();
+        };
     </script>
 </body>
 
