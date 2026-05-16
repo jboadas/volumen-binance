@@ -1,12 +1,19 @@
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
     <meta charset="UTF-8">
     <title>Binance Simulator | Vertical Station</title>
     <style>
         /* Reset y Layout Base */
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body {
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
             height: 100vh;
             width: 100vw;
             overflow: hidden;
@@ -17,7 +24,10 @@
         }
 
         /* Tipografía para números (alineación perfecta) */
-        .num { font-family: 'Courier New', monospace; text-align: right; }
+        .num {
+            font-family: 'Courier New', monospace;
+            text-align: right;
+        }
 
         /* Contenedor Superior */
         .header-panel {
@@ -30,7 +40,12 @@
             border-bottom: 1px solid #333;
         }
 
-        .logo { color: #f0b90b; font-weight: bold; font-size: 13px; letter-spacing: 1px; }
+        .logo {
+            color: #f0b90b;
+            font-weight: bold;
+            font-size: 13px;
+            letter-spacing: 1px;
+        }
 
         /* Grid de dos columnas */
         .main-container {
@@ -66,36 +81,100 @@
             overflow-y: auto;
         }
 
-        table { width: 100%; border-collapse: collapse; }
-        th {
-            position: sticky; top: 0; background: #222;
-            color: #777; font-size: 9px; padding: 6px 8px;
-            text-align: left; z-index: 10; border-bottom: 1px solid #333;
+        table {
+            width: 100%;
+            border-collapse: collapse;
         }
-        td { padding: 5px 8px; border-bottom: 1px solid #1a1a1a; }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: #222;
+            color: #777;
+            font-size: 9px;
+            padding: 6px 8px;
+            text-align: left;
+            z-index: 10;
+            border-bottom: 1px solid #333;
+        }
+
+        td {
+            padding: 5px 8px;
+            border-bottom: 1px solid #1a1a1a;
+        }
 
         /* Estados de Mercado */
-        .bull { color: #00ff7b; font-weight: bold; }
-        .bear { color: #ff3b3b; font-weight: bold; }
-        .symbol { color: #fff; font-weight: bold; text-align: left; }
-        .ratio-gold { color: #f0b90b; font-weight: bold; }
+        .bull {
+            color: #00ff7b;
+            font-weight: bold;
+        }
+
+        .bear {
+            color: #ff3b3b;
+            font-weight: bold;
+        }
+
+        .symbol {
+            color: #fff;
+            font-weight: bold;
+            text-align: left;
+        }
+
+        .ratio-gold {
+            color: #f0b90b;
+            font-weight: bold;
+        }
 
         /* Botones Mini */
         .btn {
-            padding: 3px 8px; border-radius: 2px; cursor: pointer;
-            font-size: 10px; border: none; font-weight: bold;
+            padding: 3px 8px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 10px;
+            border: none;
+            font-weight: bold;
             transition: 0.2s;
         }
-        .btn-buy { background: #00ff7b; color: #000; }
-        .btn-buy:hover { background: #00cc62; }
-        .btn-sell { background: #ff3b3b; color: #fff; }
-        .btn-sell:hover { background: #cc2f2f; }
+
+        .btn-buy {
+            background: #00ff7b;
+            color: #000;
+        }
+
+        .btn-buy:hover {
+            background: #00cc62;
+        }
+
+        .btn-sell {
+            background: #ff3b3b;
+            color: #fff;
+        }
+
+        .btn-sell:hover {
+            background: #cc2f2f;
+        }
 
         /* Animación de Alerta */
-        @keyframes pulse { 0% { background: #141414; } 50% { background: #2a2400; } 100% { background: #141414; } }
-        .high-imbalance { animation: pulse 1s infinite; }
+        @keyframes pulse {
+            0% {
+                background: #141414;
+            }
+
+            50% {
+                background: #2a2400;
+            }
+
+            100% {
+                background: #141414;
+            }
+        }
+
+        .high-imbalance {
+            animation: pulse 1s infinite;
+        }
     </style>
 </head>
+
 <body>
 
     <div class="header-panel">
@@ -150,8 +229,8 @@
             try {
                 await fetch(`/api/simulate/${action}`, {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({symbol, price})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol, price })
                 });
                 update(); // Actualización inmediata tras la acción
             } catch (e) { console.error("Trade Error:", e); }
@@ -176,12 +255,12 @@
                 tickerBody.innerHTML = '';
                 status.market.forEach(item => {
                     const row = document.createElement('tr');
-                    if(item.imbalance >= 15) row.classList.add('high-imbalance');
+                    if (item.imbalance >= 15) row.classList.add('high-imbalance');
 
                     row.innerHTML = `
-                        <td class="symbol">${item.symbol.replace('USDT','')}</td>
-                        <td class="num">${item.bid.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                        <td class="num">${item.ask.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                        <td class="symbol">${item.symbol.replace('USDT', '')}</td>
+                        <td class="num">${item.bid.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                        <td class="num">${item.ask.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                         <td class="num ${item.imbalance >= 15 ? 'ratio-gold' : ''}">${item.imbalance.toFixed(1)}x</td>
                         <td style="text-align:center">
                             <button class="btn btn-buy" onclick="trade('buy','${item.symbol}',${(item.bid + item.ask) / 2})">B</button>
@@ -194,14 +273,16 @@
                 const posBody = document.getElementById('positions-body');
                 posBody.innerHTML = '';
                 for (const [symbol, raw] of Object.entries(positions)) {
-                    const p = JSON.parse(raw);
+                    const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
                     const m = status.market.find(x => x.symbol === symbol);
                     const curPrice = m ? (m.bid + m.ask) / 2 : p.buy_price;
-                    const pnl = ((curPrice - p.buy_price) / p.buy_price) * 100;
+                    const pnl = typeof p.unrealized_pnl === 'number'
+                        ? p.unrealized_pnl
+                        : ((curPrice - p.buy_price) / p.buy_price) * 100;
 
                     const row = document.createElement('tr');
                     row.innerHTML = `
-                        <td class="symbol">${symbol.replace('USDT','')}</td>
+                        <td class="symbol">${symbol.replace('USDT', '')}</td>
                         <td class="num">${p.amount.toFixed(4)}</td>
                         <td class="num">${p.buy_price.toFixed(2)}</td>
                         <td class="num">${curPrice.toFixed(2)}</td>
@@ -220,4 +301,5 @@
         update();
     </script>
 </body>
+
 </html>
