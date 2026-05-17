@@ -9,25 +9,24 @@ class BinanceScanner:
         self.r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
         self.symbols = [
             'btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt',
-            'dogeusdt', 'adausdt', 'trxusdt', 'shibusdt', 'dotusdt'
+            'dogeusdt', 'adausdt', 'trxusdt', 'dotusdt'
         ]
         self.base_url = "wss://stream.binance.com:9443/ws"
         self.streams = "/".join([f"{s}@bookTicker" for s in self.symbols])
 
-        # Diccionario de colas para almacenar el precio medio segundo a segundo.
-        # 5 minutos = 300 segundos. Ponemos un límite máximo (maxlen) para liberar memoria automáticamente.
+        # Guardamos en memoria el historial segundo a segundo (5 minutos = 300 muestras)
         self.price_history = {s.upper(): deque(maxlen=300) for s in self.symbols}
         self.last_tick_time = {s.upper(): 0 for s in self.symbols}
 
     async def start_scanning(self):
         url = f"{self.base_url}/{self.streams}"
-        print(f"📡 Conectando a Binance (Filtro Avanzado de Rango 5m)...")
+        print("[INFO] SCANNER: Conectando al WebSocket de Binance (Filtro Multi-Temporal)...")
 
         while True:
             try:
                 async with websockets.connect(url) as websocket:
                     market_data = {s.upper(): {} for s in self.symbols}
-                    print("✅ Conexión establecida. Calculando matrices de tendencia...")
+                    print("[INFO] SCANNER: Conexion WebSocket establecida con exito.")
 
                     while True:
                         try:
@@ -43,41 +42,38 @@ class BinanceScanner:
 
                             now = asyncio.get_event_loop().time()
 
-                            # Registramos el precio histórico exactamente una vez por segundo
+                            # Registramos una muestra limpia en el historial exactamente cada 1 segundo
                             if now - self.last_tick_time[symbol] >= 1.0:
                                 self.price_history[symbol].append(current_mid)
                                 self.last_tick_time[symbol] = now
 
-                            # --- CÁLCULO DE TENDENCIAS MULTI-TEMPORALES ---
+                            # --- CALCULOS ESTRUCTURALES ---
                             history = self.price_history[symbol]
                             history_len = len(history)
 
                             trend_30s = "NEUTRAL"
                             trend_1m = "NEUTRAL"
-                            range_pct = 50.0  # Si no hay historial suficiente, asumimos el medio por seguridad
+                            range_pct = 50.0
+                            min_p = current_mid  # Respaldo
 
+                            # Tendencia corta de 30 segundos
                             if history_len >= 30:
-                                # Compara precio actual contra el de hace 30 segundos
-                                idx_30s = -30 if history_len >= 30 else -history_len
-                                if current_mid > history[idx_30s]: trend_30s = "UP"
-                                elif current_mid < history[idx_30s]: trend_30s = "DOWN"
+                                if current_mid > history[-30]: trend_30s = "UP"
+                                elif current_mid < history[-30]: trend_30s = "DOWN"
 
+                            # Tendencia intermedia de 1 minuto
                             if history_len >= 60:
-                                # Compara precio actual contra el de hace 60 segundos (1 minuto)
-                                idx_1m = -60 if history_len >= 60 else -history_len
-                                if current_mid > history[idx_1m]: trend_1m = "UP"
-                                elif current_mid < history[idx_1m]: trend_1m = "DOWN"
+                                if current_mid > history[-60]: trend_1m = "UP"
+                                elif current_mid < history[-60]: trend_1m = "DOWN"
 
+                            # Ubicacion del Rango y Captura del Suelo Real de 5 minutos
                             if history_len > 1:
-                                # Rango de 5 minutos (busca el pico más alto y más bajo en la cola)
                                 max_p = max(history)
-                                min_p = min(history)
+                                min_p = min(history)  # 🔍 SUELO REAL AUDITADO POR WEBSOCKET
                                 if max_p > min_p:
-                                    # Posicionamiento matemático porcentual (Fórmula Min-Max)
                                     range_pct = ((current_mid - min_p) / (max_p - min_p)) * 100
 
-                            # Unificamos criterios para el Frontend
-                            # Para pintar la flecha principal, exigimos alineación de 30s y 1m
+                            # Validacion de alineacion de tendencias para la señal de ejecucion
                             if trend_30s == "UP" and trend_1m == "UP":
                                 price_direction = "UP"
                             elif trend_30s == "DOWN" and trend_1m == "DOWN":
@@ -91,19 +87,21 @@ class BinanceScanner:
                                 "ask": ask_p,
                                 "imbalance": imbalance,
                                 "price_direction": price_direction,
-                                "range_pct": range_pct  # Enviamos el mapa de oscilación a la central
+                                "range_pct": range_pct,
+                                "min_price_5m": min_p  # ⬅️ ENVIADO AL BACKEND SIN PERDER RESOLUCION
                             }
 
+                            # Inyeccion masiva del estado actual en Redis
                             self.r.set("market_status", json.dumps(list(market_data.values())))
 
                         except (websockets.exceptions.ConnectionClosed, asyncio.exceptions.CancelledError):
                             break
                         except Exception as e:
-                            print(f"❌ Error en datos: {e}")
+                            print(f"[ERROR] SCANNER: Fallo en el procesamiento de datos del stream: {e}")
                             await asyncio.sleep(1)
 
             except Exception as e:
-                print(f"❌ Error de conexión: {e}. Reintentando en 5s...")
+                print(f"[ERROR] SCANNER: Desconexion del servidor WebSocket. Reintentando en 5s... ({e})")
                 await asyncio.sleep(5)
 
 if __name__ == "__main__":
@@ -111,4 +109,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(scanner.start_scanning())
     except KeyboardInterrupt:
-        print("\n🛑 Scanner detenido.")
+        print("\n[INFO] SCANNER: Radar apagado por el usuario.")

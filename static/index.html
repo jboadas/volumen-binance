@@ -439,7 +439,9 @@
                 const marketTbody = document.getElementById('market-tbody');
                 if (data.market && data.market.length > 0) {
                     let marketHtml = '';
-                    const sortedMarket = data.market.sort((a, b) => b.imbalance - a.imbalance);
+
+                    // Ordenamos de forma alfabética estricta por símbolo (A-Z) la tabla de mercado (Derecha)
+                    const sortedMarket = data.market.sort((a, b) => a.symbol.localeCompare(b.symbol));
 
                     sortedMarket.forEach(item => {
                         const midPrice = (parseFloat(item.bid) + parseFloat(item.ask)) / 2;
@@ -458,7 +460,6 @@
                             dirIcon = "⬇️";
                         }
 
-                        // Extraemos el valor del porcentaje de rango de los 5 minutos que envía el backend
                         const rangeValue = item.range_pct !== undefined ? parseFloat(item.range_pct).toFixed(0) : '50';
 
                         marketHtml += `

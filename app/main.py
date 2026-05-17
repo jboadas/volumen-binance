@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse
 r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 scanner_process = None
 
-# --- MANEJO DE LIFESPAN (Arranque y Apagado Moderno) ---
+# --- MANEJO DE LIFESPAN (Arranque y Apagado Moderno de la Aplicacion) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # LO QUE SE EJECUTA AL ARRANCAR (STARTUP)
@@ -24,21 +24,21 @@ async def lifespan(app: FastAPI):
 
     if not r.exists("wallet"):
         r.set("wallet", json.dumps({"balance": 100.0, "pnl": 0.0}))
-        print("🚀 Redis vacío: Se ha creado una wallet nueva de simulación con $100.00.")
+        print("[INIT] Redis vacio: Se ha creado una wallet nueva de simulacion con $100.00.")
     else:
         wallet_actual = load_wallet()
-        print(f"💰 WALLET DETECTADA: Conservando progreso. Balance disponible: ${wallet_actual['balance']:.2f}")
+        print(f"[INIT] WALLET DETECTADA: Conservando progreso. Balance disponible: ${wallet_actual['balance']:.2f}")
 
     asyncio.create_task(monitoring_loop())
 
-    yield  # Aquí se mantiene la app corriendo de forma normal
+    yield  # Aqui se mantiene la aplicacion ejecutandose normalmente
 
     # LO QUE SE EJECUTA AL APAGAR (SHUTDOWN)
     if scanner_process:
         scanner_process.terminate()
         scanner_process.wait()
 
-# Inicializamos FastAPI pasándole el controlador de ciclo de vida moderno
+# Inicializamos FastAPI inyectandole el ciclo de vida moderno libre de warnings
 app = FastAPI(lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -83,16 +83,16 @@ async def monitoring_loop():
 
         try:
             market_data = json.loads(market_raw)
-            # Filtro defensivo: Solo procesamos elementos que sean diccionarios y tengan la clave 'symbol'
+            # Filtro defensivo robusto contra nulos o arranques parciales
             market = {item['symbol']: item for item in market_data if isinstance(item, dict) and 'symbol' in item}
         except Exception as e:
-            print(f"⚠️ Error procesando market_status desde Redis: {e}")
+            print(f"[ERROR] Procesando market_status desde Redis: {e}")
             continue
 
         if not market:
             continue
 
-        # --- 1. PROCESAR VENTAS ---
+        # --- 1. PROCESAR VENTAS INDEPENDIENTES ---
         for symbol, pos_raw in positions.items():
             pos = json.loads(pos_raw)
             if symbol not in market:
@@ -101,7 +101,13 @@ async def monitoring_loop():
             cur_price = (float(m['bid']) + float(m['ask'])) / 2
 
             pnl = compute_unrealized_net_pct(pos, cur_price)
-            if pnl >= 1.5 or pnl <= -0.5:
+
+            # Recuperamos el precio del minimo exacto en dolares guardado al comprar.
+            # Respaldo: Si es un trade antiguo que no lo tenia, calcula el -0.5% clasico por seguridad.
+            stop_loss_price = float(pos.get("stop_loss_price", float(pos.get("buy_price", 0)) * 0.995))
+
+            # CONDICION DE SALIDA: Take Profit Fijo (+1.5%) O ruptura del Suelo Estructurado (Precio <= SL)
+            if pnl >= 1.5 or cur_price <= stop_loss_price:
                 wallet = load_wallet()
                 amount = float(pos['amount'])
                 cost = float(pos.get('cost', 0.0))
@@ -114,25 +120,27 @@ async def monitoring_loop():
                 r.set("wallet", json.dumps(wallet))
                 r.hdel("open_positions", symbol)
 
-                if pnl <= -0.5:
+                if cur_price <= stop_loss_price:
                     r.setex(f"cooldown:{symbol}", 300, "bloqueado")
-                    print(f"🚫 BOT: {symbol} castigado por 5 minutos (Stop Loss activado).")
+                    print(f"[ALERTA] SL ESTRUCTURADO GATILLADO en {symbol}. El precio rompio el suelo de ({stop_loss_price:.4f}). Salida real en {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
                 else:
                     r.setex(f"cooldown:{symbol}", 60, "bloqueado")
+                    print(f"[LOG] TAKE PROFIT ALCANZADO en {symbol} a {sell_price_effective:.2f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
-                print(f"🤖 BOT: Vendiendo {symbol} a {sell_price_effective:.2f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
-
-        # --- 2. PROCESAR COMPRAS ---
+        # --- 2. PROCESAR COMPRAS CON CONFIRMACION DE REBOTE ---
         for item in market.values():
             symbol = item['symbol']
             imbalance = float(item['imbalance'])
             price_direction = item.get('price_direction', 'NEUTRAL')
             range_pct = float(item.get('range_pct', 50.0))
+            min_price_5m = float(item.get('min_price_5m', 0.0))  # Capturamos el precio suelo enviado por el scanner
 
             wallet = load_wallet()
             in_cooldown = r.exists(f"cooldown:{symbol}")
 
-            if imbalance >= 15 and price_direction == "UP" and range_pct <= 50.0 and not in_cooldown and symbol not in r.hkeys("open_positions") and wallet['balance'] >= 10.0:
+            # FILTRO DE REBOTE CONFIRMADO (25% <= range_pct <= 50%):
+            # No compra caidas libres peligrosas y exige que el precio se despegue del piso con volumen.
+            if imbalance >= 15 and price_direction == "UP" and (25.0 <= range_pct <= 50.0) and not in_cooldown and symbol not in r.hkeys("open_positions") and wallet['balance'] >= 10.0:
                 price = (float(item['bid']) + float(item['ask'])) / 2
                 invest = 10.0
                 qty, buy_price_effective = compute_effective_buy_amount(invest, price)
@@ -140,14 +148,16 @@ async def monitoring_loop():
                 wallet['balance'] = float(wallet['balance']) - float(invest)
                 r.set("wallet", json.dumps(wallet))
 
+                # Registramos la posicion inyectando el Stop Loss fijo en dolares
                 r.hset("open_positions", symbol, json.dumps({
                     "buy_price": price,
                     "entry_price_effective": buy_price_effective,
                     "amount": qty,
-                    "cost": invest
+                    "cost": invest,
+                    "stop_loss_price": min_price_5m  # El muro de contencion queda grabado en el 0% de la estructura
                 }))
 
-                print(f"🚀 BOT: Compra Estratégica en {symbol} a {buy_price_effective:.2f}. Ubicación Rango: {range_pct:.1f}% (Ratio: {imbalance:.1f}x) - Balance: {wallet['balance']:.2f}")
+                print(f"[LOG] Compra por Rebote Confirmado en {symbol} a {buy_price_effective:.4f}. Rango: {range_pct:.1f}% | SL en Suelo Fijo: {min_price_5m:.4f} | Balance: {wallet['balance']:.2f}")
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
@@ -201,17 +211,27 @@ async def simulate_buy(request: Request):
         return {"status": "error", "msg": "Saldo insuficiente"}
 
     if r.hexists("open_positions", symbol):
-        return {"status": "error", "msg": "Ya tienes una posición abierta"}
+        return {"status": "error", "msg": "Ya tienes una posicion abierta"}
 
     qty, buy_price_effective = compute_effective_buy_amount(invest, market_price)
     wallet['balance'] = float(wallet['balance']) - float(invest)
     r.set("wallet", json.dumps(wallet))
 
+    # Busqueda rapida del suelo actual por si se fuerza una compra manual
+    market_raw = r.get("market_status")
+    sl_manual = market_price * 0.995  # Respaldo clasico
+    if market_raw:
+        for item in json.loads(market_raw):
+            if item.get('symbol') == symbol:
+                sl_manual = float(item.get('min_price_5m', market_price * 0.995))
+                break
+
     r.hset("open_positions", symbol, json.dumps({
         "buy_price": market_price,
         "entry_price_effective": buy_price_effective,
         "amount": qty,
-        "cost": invest
+        "cost": invest,
+        "stop_loss_price": sl_manual
     }))
     return {"status": "ok"}
 
