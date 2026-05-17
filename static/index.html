@@ -64,7 +64,7 @@
             margin-bottom: 1px;
         }
 
-        .metric-value {
+        .wallet-metric .metric-value {
             font-size: 15px;
             font-weight: bold;
         }
@@ -133,7 +133,6 @@
             border-collapse: collapse;
             text-align: left;
             font-size: 11px;
-            /* Fuente reducida para modo terminal compacto */
         }
 
         thead th {
@@ -314,12 +313,13 @@
                                 <th>Símbolo</th>
                                 <th>Mid Price</th>
                                 <th>Imbalance</th>
+                                <th>Dir (5m)</th>
                                 <th>Acción</th>
                             </tr>
                         </thead>
                         <tbody id="market-tbody">
                             <tr>
-                                <td colspan="4" class="empty-state">Cargando...</td>
+                                <td colspan="5" class="empty-state">Cargando...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -339,8 +339,7 @@
                 });
                 const data = await res.json();
                 if (data.status === "error") alert(`Error: ${data.msg || data.message}`);
-                fetchStatus();
-                fetchPositions();
+                updateDashboard();
             } catch (err) {
                 console.error(err);
             }
@@ -356,69 +355,22 @@
                 });
                 const data = await res.json();
                 if (data.status === "error") alert(`Error: ${data.message}`);
-                fetchStatus();
-                fetchPositions();
+                updateDashboard();
             } catch (err) {
                 console.error(err);
             }
         }
 
-        async function fetchStatus() {
+        async function updateDashboard() {
             try {
-                const response = await fetch('/api/status');
-                const data = await response.json();
+                // 1. Obtener posiciones abiertas
+                const resPositions = await fetch('/api/positions');
+                const positions = await resPositions.json();
+                const openSymbols = Object.keys(positions);
 
-                const wallet = data.wallet || { balance: 0.0, pnl: 0.0 };
-                document.getElementById('wallet-balance').innerText = `$${parseFloat(wallet.balance).toFixed(2)}`;
-
-                const pnlElement = document.getElementById('wallet-pnl');
-                const currentPnl = parseFloat(wallet.pnl);
-                pnlElement.innerText = `${currentPnl >= 0 ? '+' : ''}${currentPnl.toFixed(2)}%`;
-
-                if (currentPnl > 0) {
-                    pnlElement.className = 'metric-value value-positive';
-                } else if (currentPnl < 0) {
-                    pnlElement.className = 'metric-value value-negative';
-                } else {
-                    pnlElement.className = 'metric-value value-neutral';
-                }
-
-                const marketTbody = document.getElementById('market-tbody');
-                if (data.market && data.market.length > 0) {
-                    let marketHtml = '';
-                    data.market.forEach(item => {
-                        const midPrice = (parseFloat(item.bid) + parseFloat(item.ask)) / 2;
-                        marketHtml += `
-                            <tr>
-                                <td><span class="market-badge">${item.symbol}</span></td>
-                                <td>${midPrice.toFixed(4)}</td>
-                                <td style="font-weight: 500; color: ${parseFloat(item.imbalance) >= 15 ? '#48bb78' : '#cbd5e0'}">
-                                    ${parseFloat(item.imbalance).toFixed(1)}%
-                                </td>
-                                <td>
-                                    <button class="btn-action btn-buy" onclick="manualBuy('${item.symbol}', ${midPrice})">Buy</button>
-                                </td>
-                            </tr>
-                        `;
-                    });
-                    marketTbody.innerHTML = marketHtml;
-                } else {
-                    marketTbody.innerHTML = `<tr><td colspan="4" class="empty-state">No hay datos</td></tr>`;
-                }
-            } catch (error) {
-                console.error("Error status:", error);
-            }
-        }
-
-        async function fetchPositions() {
-            try {
-                const response = await fetch('/api/positions');
-                const positions = await response.json();
                 const positionsTbody = document.getElementById('positions-tbody');
-
-                if (Object.keys(positions).length > 0) {
+                if (openSymbols.length > 0) {
                     let positionsHtml = '';
-
                     for (const symbol in positions) {
                         const pos = positions[symbol];
                         const entryPrice = parseFloat(pos.entry_price_effective || pos.buy_price || 0);
@@ -464,17 +416,82 @@
                 } else {
                     positionsTbody.innerHTML = `<tr><td colspan="7" class="empty-state">No hay posiciones abiertas</td></tr>`;
                 }
+
+                // 2. Obtener estado del mercado y wallet
+                const response = await fetch('/api/status');
+                const data = await response.json();
+
+                const wallet = data.wallet || { balance: 0.0, pnl: 0.0 };
+                document.getElementById('wallet-balance').innerText = `$${parseFloat(wallet.balance).toFixed(2)}`;
+
+                const pnlElement = document.getElementById('wallet-pnl');
+                const currentPnl = parseFloat(wallet.pnl);
+                pnlElement.innerText = `${currentPnl >= 0 ? '+' : ''}${currentPnl.toFixed(2)}%`;
+
+                if (currentPnl > 0) {
+                    pnlElement.className = 'metric-value value-positive';
+                } else if (currentPnl < 0) {
+                    pnlElement.className = 'metric-value value-negative';
+                } else {
+                    pnlElement.className = 'metric-value value-neutral';
+                }
+
+                const marketTbody = document.getElementById('market-tbody');
+                if (data.market && data.market.length > 0) {
+                    let marketHtml = '';
+                    const sortedMarket = data.market.sort((a, b) => b.imbalance - a.imbalance);
+
+                    sortedMarket.forEach(item => {
+                        const midPrice = (parseFloat(item.bid) + parseFloat(item.ask)) / 2;
+                        const isAlreadyBought = openSymbols.includes(item.symbol);
+
+                        const rowStyle = isAlreadyBought ? 'background-color: rgba(56, 161, 105, 0.15);' : '';
+
+                        let dirColor = "#718096";
+                        let dirIcon = "➡️";
+
+                        if (item.price_direction === "UP") {
+                            dirColor = "#48bb78";
+                            dirIcon = "⬆️";
+                        } else if (item.price_direction === "DOWN") {
+                            dirColor = "#f56565";
+                            dirIcon = "⬇️";
+                        }
+
+                        // Extraemos el valor del porcentaje de rango de los 5 minutos que envía el backend
+                        const rangeValue = item.range_pct !== undefined ? parseFloat(item.range_pct).toFixed(0) : '50';
+
+                        marketHtml += `
+                            <tr style="${rowStyle}">
+                                <td><span class="market-badge">${item.symbol}</span></td>
+                                <td>${midPrice.toFixed(4)}</td>
+                                <td style="font-weight: 500; color: ${parseFloat(item.imbalance) >= 15 ? '#f56565' : '#cbd5e0'}">
+                                    ${parseFloat(item.imbalance).toFixed(1)}x
+                                </td>
+                                <td style="color: ${dirColor}; font-weight: bold;">
+                                    ${dirIcon} ${item.price_direction || 'NEUTRAL'} (${rangeValue}%)
+                                </td>
+                                <td>
+                                    <button class="btn-action btn-buy" onclick="manualBuy('${item.symbol}', ${midPrice})" ${isAlreadyBought ? 'disabled style="opacity: 0.4; cursor: not-allowed;"' : ''}>
+                                        ${isAlreadyBought ? 'Held' : 'Buy'}
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                    });
+                    marketTbody.innerHTML = marketHtml;
+                } else {
+                    marketTbody.innerHTML = `<tr><td colspan="5" class="empty-state">No hay datos</td></tr>`;
+                }
             } catch (error) {
-                console.error("Error posiciones:", error);
+                console.error("Error actualizando el dashboard:", error);
             }
         }
 
-        setInterval(fetchStatus, 2000);
-        setInterval(fetchPositions, 1000);
+        setInterval(updateDashboard, 1000);
 
         window.onload = () => {
-            fetchStatus();
-            fetchPositions();
+            updateDashboard();
         };
     </script>
 </body>
