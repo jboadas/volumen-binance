@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Micro-Scanner Crypto Bot</title>
+    <title>MicroScanner Crypto Bot</title>
     <style>
         * {
             box-sizing: border-box;
@@ -267,7 +267,7 @@
     <div class="container">
         <header>
             <div>
-                <h1>Micro-Scanner</h1>
+                <h1>MicroScanner</h1>
             </div>
             <div class="wallet-panel">
                 <div class="wallet-metric">
@@ -287,18 +287,18 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>Símbolo</th>
-                                <th>Entrada</th>
-                                <th>Actual</th>
+                                <th>Symbol</th>
+                                <th>Entry</th>
+                                <th>Current</th>
                                 <th>Qty</th>
                                 <th>Cost</th>
                                 <th>PNL %</th>
-                                <th>Acción</th>
+                                <th>Action</th>
                             </tr>
                         </thead>
                         <tbody id="positions-tbody">
                             <tr>
-                                <td colspan="7" class="empty-state">Cargando...</td>
+                                <td colspan="7" class="empty-state">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -310,16 +310,16 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>Símbolo</th>
+                                <th>Symbol</th>
                                 <th>Mid Price</th>
                                 <th>Imbalance</th>
                                 <th>Dir (5m)</th>
-                                <th>Acción</th>
+                                <th>Action</th>
                             </tr>
                         </thead>
                         <tbody id="market-tbody">
                             <tr>
-                                <td colspan="5" class="empty-state">Cargando...</td>
+                                <td colspan="5" class="empty-state">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -330,7 +330,7 @@
 
     <script>
         async function manualBuy(symbol, price) {
-            if (!confirm(`¿Forzar COMPRA manual de $10 en ${symbol}?`)) return;
+            if (!confirm(`Force manual BUY of $10 for ${symbol}?`)) return;
             try {
                 const res = await fetch('/api/simulate/buy', {
                     method: 'POST',
@@ -346,7 +346,7 @@
         }
 
         async function manualSell(symbol, price) {
-            if (!confirm(`¿Forzar VENTA manual de ${symbol}?`)) return;
+            if (!confirm(`Force manual SELL for ${symbol}?`)) return;
             try {
                 const res = await fetch('/api/simulate/sell', {
                     method: 'POST',
@@ -363,7 +363,6 @@
 
         async function updateDashboard() {
             try {
-                // 1. Obtener posiciones abiertas
                 const resPositions = await fetch('/api/positions');
                 const positions = await resPositions.json();
                 const openSymbols = Object.keys(positions);
@@ -392,7 +391,7 @@
                             } else if (pnl <= -0.35) {
                                 pnlClass = "pnl-high-risk";
                                 rowClass = "row-high-risk";
-                                riskBadge = `<span class="badge-risk">Riesgo</span>`;
+                                riskBadge = `<span class="badge-risk">Risk</span>`;
                             } else if (pnl < 0) {
                                 pnlClass = "value-negative";
                             }
@@ -414,10 +413,9 @@
                     }
                     positionsTbody.innerHTML = positionsHtml;
                 } else {
-                    positionsTbody.innerHTML = `<tr><td colspan="7" class="empty-state">No hay posiciones abiertas</td></tr>`;
+                    positionsTbody.innerHTML = `<tr><td colspan="7" class="empty-state">No open positions</td></tr>`;
                 }
 
-                // 2. Obtener estado del mercado y wallet
                 const response = await fetch('/api/status');
                 const data = await response.json();
 
@@ -439,14 +437,11 @@
                 const marketTbody = document.getElementById('market-tbody');
                 if (data.market && data.market.length > 0) {
                     let marketHtml = '';
-
-                    // Ordenamos de forma alfabética estricta por símbolo (A-Z) la tabla de mercado (Derecha)
                     const sortedMarket = data.market.sort((a, b) => a.symbol.localeCompare(b.symbol));
 
                     sortedMarket.forEach(item => {
                         const midPrice = (parseFloat(item.bid) + parseFloat(item.ask)) / 2;
                         const isAlreadyBought = openSymbols.includes(item.symbol);
-
                         const rowStyle = isAlreadyBought ? 'background-color: rgba(56, 161, 105, 0.15);' : '';
 
                         let dirColor = "#718096";
@@ -482,18 +477,15 @@
                     });
                     marketTbody.innerHTML = marketHtml;
                 } else {
-                    marketTbody.innerHTML = `<tr><td colspan="5" class="empty-state">No hay datos</td></tr>`;
+                    marketTbody.innerHTML = `<tr><td colspan="5" class="empty-state">No market data available</td></tr>`;
                 }
             } catch (error) {
-                console.error("Error actualizando el dashboard:", error);
+                console.error("Error updating dashboard:", error);
             }
         }
 
         setInterval(updateDashboard, 1000);
-
-        window.onload = () => {
-            updateDashboard();
-        };
+        window.onload = () => updateDashboard();
     </script>
 </body>
 

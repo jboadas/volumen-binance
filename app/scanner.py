@@ -14,13 +14,13 @@ class BinanceScanner:
         self.base_url = "wss://stream.binance.com:9443/ws"
         self.streams = "/".join([f"{s}@bookTicker" for s in self.symbols])
 
-        # Guardamos en memoria el historial segundo a segundo (5 minutos = 300 muestras)
-        self.price_history = {s.upper(): deque(maxlen=300) for s in self.symbols}
+        # AHORA SI: 15 minutos = 900 muestras fijas (1 por segundo)
+        self.price_history = {s.upper(): deque(maxlen=900) for s in self.symbols}
         self.last_tick_time = {s.upper(): 0 for s in self.symbols}
 
     async def start_scanning(self):
         url = f"{self.base_url}/{self.streams}"
-        print("[INFO] SCANNER: Conectando al WebSocket de Binance (Filtro Multi-Temporal)...")
+        print("[INFO] SCANNER: Conectando al WebSocket de Binance (Filtro Multi-Temporal 15m)...")
 
         while True:
             try:
@@ -47,36 +47,36 @@ class BinanceScanner:
                                 self.price_history[symbol].append(current_mid)
                                 self.last_tick_time[symbol] = now
 
-                            # --- CALCULOS ESTRUCTURALES ---
+                            # --- CALCULOS ESTRUCTURALES UNIFICADOS ---
                             history = self.price_history[symbol]
                             history_len = len(history)
 
-                            trend_30s = "NEUTRAL"
                             trend_1m = "NEUTRAL"
+                            trend_5m = "NEUTRAL"
                             range_pct = 50.0
                             min_p = current_mid  # Respaldo
 
-                            # Tendencia corta de 30 segundos
-                            if history_len >= 30:
-                                if current_mid > history[-30]: trend_30s = "UP"
-                                elif current_mid < history[-30]: trend_30s = "DOWN"
-
-                            # Tendencia intermedia de 1 minuto
+                            # Tendencia de 1 minuto (Fuerza inmediata)
                             if history_len >= 60:
                                 if current_mid > history[-60]: trend_1m = "UP"
                                 elif current_mid < history[-60]: trend_1m = "DOWN"
 
-                            # Ubicacion del Rango y Captura del Suelo Real de 5 minutos
+                            # Tendencia de 5 minutos (Confirmación de rebote estructural)
+                            if history_len >= 300:
+                                if current_mid > history[-300]: trend_5m = "UP"
+                                elif current_mid < history[-300]: trend_5m = "DOWN"
+
+                            # Ubicacion del Rango y Captura del Suelo Real de los 15 minutos (900 muestras)
                             if history_len > 1:
                                 max_p = max(history)
-                                min_p = min(history)  # 🔍 SUELO REAL AUDITADO POR WEBSOCKET
+                                min_p = min(history)  # 🔍 SUELO REAL DE 15 MINUTOS AUDITADO
                                 if max_p > min_p:
                                     range_pct = ((current_mid - min_p) / (max_p - min_p)) * 100
 
-                            # Validacion de alineacion de tendencias para la señal de ejecucion
-                            if trend_30s == "UP" and trend_1m == "UP":
+                            # Validacion CORRECTA de alineacion de tendencias (1m y 5m)
+                            if trend_1m == "UP" and trend_5m == "UP":
                                 price_direction = "UP"
-                            elif trend_30s == "DOWN" and trend_1m == "DOWN":
+                            elif trend_1m == "DOWN" and trend_5m == "DOWN":
                                 price_direction = "DOWN"
                             else:
                                 price_direction = "NEUTRAL"
@@ -88,7 +88,7 @@ class BinanceScanner:
                                 "imbalance": imbalance,
                                 "price_direction": price_direction,
                                 "range_pct": range_pct,
-                                "min_price_5m": min_p  # ⬅️ ENVIADO AL BACKEND SIN PERDER RESOLUCION
+                                "min_price_5m": min_p  # Mantiene el nombre de variable para no romper el main.py
                             }
 
                             # Inyeccion masiva del estado actual en Redis
