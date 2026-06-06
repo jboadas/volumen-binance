@@ -564,11 +564,12 @@
                         const imbalanceOk = parseFloat(item.imbalance) >= 5;
                         const dirOk = item.price_direction === "UP";
                         const rangeOk = range24hPct <= 30;
+                        const macroOk = parseFloat(item.change_24h_pct) > -5;
                         const hasBalance = parseFloat(wallet.balance) >= 10;
                         const notHeld = !isAlreadyBought;
 
-                        const conditionsMet = [imbalanceOk, dirOk, rangeOk, hasBalance, notHeld].filter(Boolean).length;
-                        const canBuy = conditionsMet === 5;
+                        const conditionsMet = [imbalanceOk, dirOk, rangeOk, macroOk, hasBalance, notHeld].filter(Boolean).length;
+                        const canBuy = conditionsMet === 6;
 
                         let btnClass = 'btn-far';
                         let btnText = 'Wait';
@@ -595,6 +596,7 @@
                                         <span class="signal-dot ${imbalanceOk ? 'dot-green' : 'dot-red'}" title="Imbalance ${imbalanceOk ? 'OK' : 'Low'}"></span>
                                         <span class="signal-dot ${dirOk ? 'dot-green' : 'dot-red'}" title="Direction ${dirOk ? 'UP' : item.price_direction}"></span>
                                         <span class="signal-dot ${rangeOk ? 'dot-green' : 'dot-yellow'}" title="24h range ${range24hPct.toFixed(0)}%"></span>
+                                        <span class="signal-dot ${macroOk ? 'dot-green' : 'dot-red'}" title="Macro ${macroOk ? 'OK' : 'Down ' + parseFloat(item.change_24h_pct).toFixed(1) + '%'}"></span>
                                         <span class="signal-dot ${hasBalance ? 'dot-green' : 'dot-red'}" title="Balance ${hasBalance ? 'OK' : 'Low'}"></span>
                                         <span class="signal-dot ${notHeld ? 'dot-green' : 'dot-gray'}" title="${notHeld ? 'Available' : 'Held'}"></span>
                                         <span class="range-bar-bg">

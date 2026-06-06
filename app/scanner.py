@@ -28,7 +28,7 @@ class BinanceScanner:
                     market_data = {}
                     for s in self.symbols:
                         sym = s.upper()
-                        market_data[sym] = {"high_24h": 0.0, "low_24h": 0.0}
+                        market_data[sym] = {"high_24h": 0.0, "low_24h": 0.0, "change_24h_pct": 0.0}
                     print("[INFO] SCANNER: WebSocket connection established successfully.")
 
                     while True:
@@ -42,6 +42,7 @@ class BinanceScanner:
                             if event_type == '24hrTicker':
                                 market_data[symbol]['high_24h'] = float(data['h'])
                                 market_data[symbol]['low_24h'] = float(data['l'])
+                                market_data[symbol]['change_24h_pct'] = float(data['P'])
                                 self.r.set("market_status", json.dumps(list(market_data.values())))
                                 continue
 

@@ -170,7 +170,8 @@ async def monitoring_loop():
 
                 if (imbalance >= 5 and price_direction == "UP" and not in_cooldown
                     and symbol not in r.hkeys("open_positions") and wallet['balance'] >= 10.0
-                    and range_24h_pct <= 30):
+                    and range_24h_pct <= 30
+                    and float(item.get('change_24h_pct', 0.0)) > -5):
                     price = (float(item['bid']) + float(item['ask'])) / 2
                     invest = 10.0
                     qty, buy_price_effective = compute_effective_buy_amount(invest, price)
