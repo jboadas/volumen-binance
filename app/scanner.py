@@ -88,7 +88,7 @@ class BinanceScanner:
                                 "imbalance": imbalance,
                                 "price_direction": price_direction,
                                 "range_pct": range_pct,
-                                "min_price_5m": min_p  # Mantiene el nombre de variable para no romper el main.py
+                                "min_price_15m": min_p
                             }
 
                             # Inyeccion masiva del estado actual en Redis
