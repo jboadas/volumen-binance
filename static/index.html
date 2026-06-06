@@ -436,6 +436,18 @@
         .modal-close:hover {
             background: #718096;
         }
+
+        .tv-link {
+            color: #e2e8f0;
+            text-decoration: none;
+            font-weight: 600;
+            transition: color 0.15s;
+        }
+
+        .tv-link:hover {
+            color: #63b3ed;
+            text-decoration: underline;
+        }
     </style>
 </head>
 
@@ -589,7 +601,7 @@
 
                         positionsHtml += `
                             <tr class="${rowClass}">
-                                <td style="font-weight: 600; color: #fff;">${symbol} ${riskBadge}</td>
+                                <td style="font-weight: 600; color: #fff;"><a class="tv-link" href="https://www.tradingview.com/chart/?symbol=BINANCE%3A${symbol}" target="_blank" rel="noopener">${symbol}</a> ${riskBadge}</td>
                                 <td>${entryPrice.toFixed(4)}</td>
                                 <td>${currentPrice > 0 ? currentPrice.toFixed(4) : '...'}</td>
                                 <td>${amount.toFixed(5)}</td>
@@ -656,7 +668,7 @@
 
                         marketHtml += `
                             <tr style="${rowStyle}">
-                                <td><span class="market-badge">${item.symbol}</span></td>
+                                <td><a class="tv-link market-badge" href="https://www.tradingview.com/chart/?symbol=BINANCE%3A${item.symbol}" target="_blank" rel="noopener">${item.symbol}</a></td>
                                 <td style="font-weight: 500; color: ${imbalanceOk ? '#f56565' : '#cbd5e0'}">
                                     ${parseFloat(item.imbalance).toFixed(1)}x
                                 </td>
