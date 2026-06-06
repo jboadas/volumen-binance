@@ -297,23 +297,6 @@
         .dot-red { background-color: #e53e3e; }
         .dot-gray { background-color: #4a5568; }
 
-        .range-bar-bg {
-            width: 50px;
-            height: 4px;
-            background: #2d3748;
-            border-radius: 2px;
-            overflow: hidden;
-            display: inline-block;
-            vertical-align: middle;
-            margin-left: 4px;
-        }
-
-        .range-bar-fill {
-            height: 100%;
-            border-radius: 2px;
-            transition: width 0.3s;
-        }
-
         .sl-tp-info {
             font-size: 10px;
             display: flex;
@@ -405,15 +388,16 @@
                         <thead>
                             <tr>
                                 <th>Symbol</th>
-                                <th>Mid Price</th>
                                 <th>Imbalance</th>
-                                <th>Signal</th>
+                                <th>Dir</th>
+                                <th>Range</th>
+                                <th>Macro</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
                         <tbody id="market-tbody">
                             <tr>
-                                <td colspan="5" class="empty-state">Loading...</td>
+                                <td colspan="6" class="empty-state">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -563,47 +547,25 @@
 
                         const imbalanceOk = parseFloat(item.imbalance) >= 5;
                         const dirOk = item.price_direction === "UP";
-                        const rangeOk = range24hPct <= 30;
                         const macroOk = parseFloat(item.change_24h_pct) > -5;
-                        const hasBalance = parseFloat(wallet.balance) >= 10;
-                        const notHeld = !isAlreadyBought;
 
-                        const conditionsMet = [imbalanceOk, dirOk, rangeOk, macroOk, hasBalance, notHeld].filter(Boolean).length;
-                        const canBuy = conditionsMet === 6;
-
-                        let btnClass = 'btn-far';
-                        let btnText = 'Wait';
-                        if (canBuy && !isAlreadyBought) {
-                            btnClass = 'btn-ready';
-                            btnText = 'Buy';
-                        } else if (conditionsMet >= 3 && !isAlreadyBought) {
-                            btnClass = 'btn-near';
-                            btnText = 'Near';
-                        } else if (isAlreadyBought) {
-                            btnClass = 'btn-far';
-                            btnText = 'Held';
-                        }
+                        const btnClass = isAlreadyBought ? 'btn-far' : (imbalanceOk && dirOk ? 'btn-ready' : 'btn-far');
+                        const btnText = isAlreadyBought ? 'Held' : (imbalanceOk && dirOk ? 'Buy' : 'Wait');
 
                         marketHtml += `
                             <tr style="${rowStyle}">
                                 <td><span class="market-badge">${item.symbol}</span></td>
-                                <td>${midPrice.toFixed(4)}</td>
                                 <td style="font-weight: 500; color: ${imbalanceOk ? '#f56565' : '#cbd5e0'}">
                                     ${parseFloat(item.imbalance).toFixed(1)}x
                                 </td>
-                                <td>
-                                    <div class="signal-bar">
-                                        <span class="signal-dot ${imbalanceOk ? 'dot-green' : 'dot-red'}" title="Imbalance ${imbalanceOk ? 'OK' : 'Low'}"></span>
-                                        <span class="signal-dot ${dirOk ? 'dot-green' : 'dot-red'}" title="Direction ${dirOk ? 'UP' : item.price_direction}"></span>
-                                        <span class="signal-dot ${rangeOk ? 'dot-green' : 'dot-yellow'}" title="24h range ${range24hPct.toFixed(0)}%"></span>
-                                        <span class="signal-dot ${macroOk ? 'dot-green' : 'dot-red'}" title="Macro ${macroOk ? 'OK' : 'Down ' + parseFloat(item.change_24h_pct).toFixed(1) + '%'}"></span>
-                                        <span class="signal-dot ${hasBalance ? 'dot-green' : 'dot-red'}" title="Balance ${hasBalance ? 'OK' : 'Low'}"></span>
-                                        <span class="signal-dot ${notHeld ? 'dot-green' : 'dot-gray'}" title="${notHeld ? 'Available' : 'Held'}"></span>
-                                        <span class="range-bar-bg">
-                                            <span class="range-bar-fill" style="width: ${Math.min(range24hPct, 100)}%; background: ${rangeColor};"></span>
-                                        </span>
-                                        <span style="font-size: 10px; color: ${rangeColor}; font-weight: 600;">${range24hPct.toFixed(0)}%</span>
-                                    </div>
+                                <td style="font-weight: bold; font-size: 14px; color: ${item.price_direction === 'UP' ? '#48bb78' : item.price_direction === 'DOWN' ? '#f56565' : '#718096'};">
+                                    ${item.price_direction === 'UP' ? '↑' : item.price_direction === 'DOWN' ? '↓' : '→'}
+                                </td>
+                                <td style="font-weight: 600; color: ${rangeColor};">
+                                    ${range24hPct.toFixed(0)}%
+                                </td>
+                                <td style="font-weight: 600; color: ${macroOk ? '#38a169' : '#e53e3e'};">
+                                    ${parseFloat(item.change_24h_pct).toFixed(1)}%
                                 </td>
                                 <td>
                                     <button class="btn-action ${btnClass}" onclick="manualBuy('${item.symbol}', ${midPrice})" ${isAlreadyBought ? 'disabled' : ''}>
@@ -615,7 +577,7 @@
                     });
                     marketTbody.innerHTML = marketHtml;
                 } else {
-                    marketTbody.innerHTML = `<tr><td colspan="5" class="empty-state">No market data available</td></tr>`;
+                    marketTbody.innerHTML = `<tr><td colspan="6" class="empty-state">No market data available</td></tr>`;
                 }
             } catch (error) {
                 console.error("Error updating dashboard:", error);
