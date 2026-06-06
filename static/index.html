@@ -278,6 +278,80 @@
             padding: 15px 0;
             font-style: italic;
         }
+
+        .signal-bar {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        .signal-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .dot-green { background-color: #38a169; }
+        .dot-yellow { background-color: #d69e2e; }
+        .dot-red { background-color: #e53e3e; }
+        .dot-gray { background-color: #4a5568; }
+
+        .range-bar-bg {
+            width: 50px;
+            height: 4px;
+            background: #2d3748;
+            border-radius: 2px;
+            overflow: hidden;
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 4px;
+        }
+
+        .range-bar-fill {
+            height: 100%;
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+
+        .sl-tp-info {
+            font-size: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+        }
+
+        .sl-tp-info span {
+            white-space: nowrap;
+        }
+
+        .btn-ready {
+            background-color: #2f855a;
+            color: #fff;
+        }
+
+        .btn-ready:hover {
+            background-color: #38a169;
+        }
+
+        .btn-near {
+            background-color: #b7791f;
+            color: #fff;
+        }
+
+        .btn-near:hover {
+            background-color: #d69e2e;
+        }
+
+        .btn-far {
+            background-color: #4a5568;
+            color: #fff;
+            opacity: 0.7;
+        }
+
+        .btn-far:hover {
+            background-color: #718096;
+        }
     </style>
 </head>
 
@@ -312,12 +386,13 @@
                                 <th>Qty</th>
                                 <th>Cost</th>
                                 <th>PNL %</th>
+                                <th>SL / TP</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
                         <tbody id="positions-tbody">
                             <tr>
-                                <td colspan="7" class="empty-state">Loading...</td>
+                                <td colspan="8" class="empty-state">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -332,7 +407,7 @@
                                 <th>Symbol</th>
                                 <th>Mid Price</th>
                                 <th>Imbalance</th>
-                                <th>Dir (5m)</th>
+                                <th>Signal</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
@@ -435,6 +510,14 @@
                                 <td>$${cost.toFixed(1)}</td>
                                 <td class="${pnlClass}">${pnlText}</td>
                                 <td>
+                                    <div class="sl-tp-info">
+                                        <span style="color: #e53e3e;">SL: ${pos.stop_loss_price ? parseFloat(pos.stop_loss_price).toFixed(4) : '—'}</span>
+                                        <span style="color: ${currentPrice > 0 && pos.stop_loss_price ? (currentPrice <= parseFloat(pos.stop_loss_price) ? '#e53e3e' : '#38a169') : '#718096'};">
+                                            ${currentPrice > 0 && pos.stop_loss_price ? ((currentPrice / parseFloat(pos.stop_loss_price) - 1) * 100).toFixed(1) + '% to SL' : '—'}
+                                        </span>
+                                    </div>
+                                </td>
+                                <td>
                                     <button class="btn-action btn-sell" onclick="manualSell('${symbol}', ${currentPrice})">Sell</button>
                                 </td>
                             </tr>
@@ -442,7 +525,7 @@
                     }
                     positionsTbody.innerHTML = positionsHtml;
                 } else {
-                    positionsTbody.innerHTML = `<tr><td colspan="7" class="empty-state">No open positions</td></tr>`;
+                    positionsTbody.innerHTML = `<tr><td colspan="8" class="empty-state">No open positions</td></tr>`;
                 }
 
                 const response = await fetch('/api/status');
@@ -473,32 +556,56 @@
                         const isAlreadyBought = openSymbols.includes(item.symbol);
                         const rowStyle = isAlreadyBought ? 'background-color: rgba(56, 161, 105, 0.15);' : '';
 
-                        let dirColor = "#718096";
-                        let dirIcon = "➡️";
+                        const high24h = parseFloat(item.high_24h) || 0;
+                        const low24h = parseFloat(item.low_24h) || 0;
+                        const range24hPct = high24h > low24h ? ((midPrice - low24h) / (high24h - low24h)) * 100 : 50;
+                        const rangeColor = range24hPct <= 30 ? '#38a169' : range24hPct <= 50 ? '#d69e2e' : '#e53e3e';
 
-                        if (item.price_direction === "UP") {
-                            dirColor = "#48bb78";
-                            dirIcon = "⬆️";
-                        } else if (item.price_direction === "DOWN") {
-                            dirColor = "#f56565";
-                            dirIcon = "⬇️";
+                        const imbalanceOk = parseFloat(item.imbalance) >= 5;
+                        const dirOk = item.price_direction === "UP";
+                        const rangeOk = range24hPct <= 30;
+                        const hasBalance = parseFloat(wallet.balance) >= 10;
+                        const notHeld = !isAlreadyBought;
+
+                        const conditionsMet = [imbalanceOk, dirOk, rangeOk, hasBalance, notHeld].filter(Boolean).length;
+                        const canBuy = conditionsMet === 5;
+
+                        let btnClass = 'btn-far';
+                        let btnText = 'Wait';
+                        if (canBuy && !isAlreadyBought) {
+                            btnClass = 'btn-ready';
+                            btnText = 'Buy';
+                        } else if (conditionsMet >= 3 && !isAlreadyBought) {
+                            btnClass = 'btn-near';
+                            btnText = 'Near';
+                        } else if (isAlreadyBought) {
+                            btnClass = 'btn-far';
+                            btnText = 'Held';
                         }
-
-                        const rangeValue = item.range_pct !== undefined ? parseFloat(item.range_pct).toFixed(0) : '50';
 
                         marketHtml += `
                             <tr style="${rowStyle}">
                                 <td><span class="market-badge">${item.symbol}</span></td>
                                 <td>${midPrice.toFixed(4)}</td>
-                                <td style="font-weight: 500; color: ${parseFloat(item.imbalance) >= 15 ? '#f56565' : '#cbd5e0'}">
+                                <td style="font-weight: 500; color: ${imbalanceOk ? '#f56565' : '#cbd5e0'}">
                                     ${parseFloat(item.imbalance).toFixed(1)}x
                                 </td>
-                                <td style="color: ${dirColor}; font-weight: bold;">
-                                    ${dirIcon} ${item.price_direction || 'NEUTRAL'} (${rangeValue}%)
+                                <td>
+                                    <div class="signal-bar">
+                                        <span class="signal-dot ${imbalanceOk ? 'dot-green' : 'dot-red'}" title="Imbalance ${imbalanceOk ? 'OK' : 'Low'}"></span>
+                                        <span class="signal-dot ${dirOk ? 'dot-green' : 'dot-red'}" title="Direction ${dirOk ? 'UP' : item.price_direction}"></span>
+                                        <span class="signal-dot ${rangeOk ? 'dot-green' : 'dot-yellow'}" title="24h range ${range24hPct.toFixed(0)}%"></span>
+                                        <span class="signal-dot ${hasBalance ? 'dot-green' : 'dot-red'}" title="Balance ${hasBalance ? 'OK' : 'Low'}"></span>
+                                        <span class="signal-dot ${notHeld ? 'dot-green' : 'dot-gray'}" title="${notHeld ? 'Available' : 'Held'}"></span>
+                                        <span class="range-bar-bg">
+                                            <span class="range-bar-fill" style="width: ${Math.min(range24hPct, 100)}%; background: ${rangeColor};"></span>
+                                        </span>
+                                        <span style="font-size: 10px; color: ${rangeColor}; font-weight: 600;">${range24hPct.toFixed(0)}%</span>
+                                    </div>
                                 </td>
                                 <td>
-                                    <button class="btn-action btn-buy" onclick="manualBuy('${item.symbol}', ${midPrice})" ${isAlreadyBought ? 'disabled style="opacity: 0.4; cursor: not-allowed;"' : ''}>
-                                        ${isAlreadyBought ? 'Held' : 'Buy'}
+                                    <button class="btn-action ${btnClass}" onclick="manualBuy('${item.symbol}', ${midPrice})" ${isAlreadyBought ? 'disabled' : ''}>
+                                        ${btnText}
                                     </button>
                                 </td>
                             </tr>

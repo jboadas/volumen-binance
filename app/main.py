@@ -168,7 +168,7 @@ async def monitoring_loop():
                 else:
                     range_24h_pct = 50.0
 
-                if (imbalance >= 15 and price_direction == "UP" and not in_cooldown
+                if (imbalance >= 5 and price_direction == "UP" and not in_cooldown
                     and symbol not in r.hkeys("open_positions") and wallet['balance'] >= 10.0
                     and range_24h_pct <= 30):
                     price = (float(item['bid']) + float(item['ask'])) / 2
