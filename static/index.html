@@ -240,6 +240,24 @@
             transform: scale(0.95);
         }
 
+        .btn-reset {
+            background-color: #4a5568;
+            color: #fff;
+            padding: 2px 8px;
+            border: none;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: bold;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.15s;
+            margin-left: auto;
+        }
+
+        .btn-reset:hover {
+            background-color: #718096;
+        }
+
         @keyframes pulse-border {
             0% {
                 background-color: rgba(229, 62, 62, 0.08);
@@ -278,6 +296,7 @@
                     <span class="metric-label">PNL</span>
                     <span id="wallet-pnl" class="metric-value value-neutral">0.00%</span>
                 </div>
+                <button class="btn-reset" onclick="resetWallet()">Reset</button>
             </div>
         </header>
 
@@ -355,6 +374,16 @@
                 });
                 const data = await res.json();
                 if (data.status === "error") alert(`Error: ${data.message}`);
+                updateDashboard();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function resetWallet() {
+            if (!confirm("Reset wallet to $100? This will NOT close open positions.")) return;
+            try {
+                await fetch('/api/wallet/reset', { method: 'POST' });
                 updateDashboard();
             } catch (err) {
                 console.error(err);
