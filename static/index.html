@@ -387,12 +387,12 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>Symbol</th>
-                                <th>Imbalance</th>
-                                <th>Dir</th>
-                                <th>Range</th>
-                                <th>Macro</th>
-                                <th>Action</th>
+                                <th title="Trading pair symbol (e.g. BTCUSDT)">Symbol</th>
+                                <th title="Ratio of bid liquidity to ask liquidity. >= 5x = strong buying pressure">Imbalance</th>
+                                <th title="Short-term trend direction: UP (1m+5m rising), DOWN (1m+5m falling), NEUTRAL">Dir</th>
+                                <th title="Current price position within the 24h range. 0% = low, 100% = high. Buy only when <= 30%">Range</th>
+                                <th title="24-hour price change percent. Positive = bullish macro trend, negative = bearish">Macro</th>
+                                <th title="Buy (all conditions met), Near (partial), Wait (not ready) or Held (already in position)">Action</th>
                             </tr>
                         </thead>
                         <tbody id="market-tbody">
