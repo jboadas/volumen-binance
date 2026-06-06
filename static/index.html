@@ -335,6 +335,107 @@
         .btn-far:hover {
             background-color: #718096;
         }
+
+        .btn-help {
+            background: none;
+            border: 1px solid #4a5568;
+            color: #a0aec0;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+            margin-left: 8px;
+            flex-shrink: 0;
+        }
+
+        .btn-help:hover {
+            border-color: #718096;
+            color: #e2e8f0;
+        }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.6);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal-box {
+            background: #1a202c;
+            border: 1px solid #2d3748;
+            border-radius: 8px;
+            padding: 20px;
+            max-width: 480px;
+            width: 90%;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        }
+
+        .modal-box h2 {
+            font-size: 16px;
+            color: #f7fafc;
+            margin-bottom: 12px;
+        }
+
+        .modal-box table {
+            width: 100%;
+            font-size: 12px;
+            border-collapse: collapse;
+        }
+
+        .modal-box th {
+            text-align: left;
+            color: #a0aec0;
+            font-weight: 500;
+            font-size: 10px;
+            text-transform: uppercase;
+            padding: 6px 4px;
+            border-bottom: 1px solid #2d3748;
+        }
+
+        .modal-box td {
+            padding: 6px 4px;
+            border-bottom: 1px solid #2d3748;
+            color: #cbd5e0;
+            vertical-align: top;
+        }
+
+        .modal-box td:first-child {
+            font-weight: 600;
+            color: #e2e8f0;
+            white-space: nowrap;
+        }
+
+        .modal-close {
+            background: #4a5568;
+            border: none;
+            color: #fff;
+            padding: 6px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-top: 12px;
+            float: right;
+        }
+
+        .modal-close:hover {
+            background: #718096;
+        }
     </style>
 </head>
 
@@ -354,6 +455,7 @@
                     <span id="wallet-pnl" class="metric-value value-neutral">0.00%</span>
                 </div>
                 <button class="btn-reset" onclick="resetWallet()">Reset</button>
+                <button class="btn-help" onclick="toggleHelp()" title="Buy conditions">?</button>
             </div>
         </header>
 
@@ -586,6 +688,29 @@
 
         setInterval(updateDashboard, 1000);
         window.onload = () => updateDashboard();
+    </script>
+
+    <div class="modal-overlay" id="help-modal" onclick="if(event.target===this) toggleHelp()">
+        <div class="modal-box">
+            <h2>Auto-Buy Conditions</h2>
+            <table>
+                <tr><th>Condition</th><th>Detail</th></tr>
+                <tr><td>Imbalance ≥ 5x</td><td>Bid liquidity 5x greater than ask liquidity (buying pressure)</td></tr>
+                <tr><td>Direction = UP</td><td>1-minute and 5-minute trends both rising</td></tr>
+                <tr><td>Range ≤ 30%</td><td>Price in the lower 30% of the 24h range (near the low)</td></tr>
+                <tr><td>Macro > -5%</td><td>Asset hasn't dropped more than 5% in 24 hours</td></tr>
+                <tr><td>No cooldown</td><td>300s cooldown after stop loss, 60s after take profit</td></tr>
+                <tr><td>No position</td><td>No open position for this symbol</td></tr>
+                <tr><td>Balance ≥ $10</td><td>Enough funds in the simulation wallet</td></tr>
+            </table>
+            <button class="modal-close" onclick="toggleHelp()">Close</button>
+        </div>
+    </div>
+
+    <script>
+        function toggleHelp() {
+            document.getElementById('help-modal').classList.toggle('active');
+        }
     </script>
 </body>
 
