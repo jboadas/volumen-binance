@@ -12,28 +12,39 @@ class BinanceScanner:
             'dogeusdt', 'adausdt', 'trxusdt', 'dotusdt'
         ]
         self.base_url = "wss://stream.binance.com:9443/ws"
-        self.streams = "/".join([f"{s}@bookTicker" for s in self.symbols])
+        self.streams = "/".join([f"{s}@bookTicker/{s}@24hrTicker" for s in self.symbols])
 
-        # AHORA SI: 15 minutos = 900 muestras fijas (1 por segundo)
+        # 15 min window = 900 samples fixed (1 per second)
         self.price_history = {s.upper(): deque(maxlen=900) for s in self.symbols}
         self.last_tick_time = {s.upper(): 0 for s in self.symbols}
 
     async def start_scanning(self):
         url = f"{self.base_url}/{self.streams}"
-        print("[INFO] SCANNER: Conectando al WebSocket de Binance (Filtro Multi-Temporal 15m)...")
+        print("[INFO] SCANNER: Connecting to Binance WebSocket (Multi-Timeframe 15m)...")
 
         while True:
             try:
                 async with websockets.connect(url) as websocket:
-                    market_data = {s.upper(): {} for s in self.symbols}
-                    print("[INFO] SCANNER: Conexion WebSocket establecida con exito.")
+                    market_data = {}
+                    for s in self.symbols:
+                        sym = s.upper()
+                        market_data[sym] = {"high_24h": 0.0, "low_24h": 0.0}
+                    print("[INFO] SCANNER: WebSocket connection established successfully.")
 
                     while True:
                         try:
                             raw_data = await websocket.recv()
                             data = json.loads(raw_data)
 
-                            symbol = data['s']
+                            event_type = data.get('e', '')
+                            symbol = data['s'].upper()
+
+                            if event_type == '24hrTicker':
+                                market_data[symbol]['high_24h'] = float(data['h'])
+                                market_data[symbol]['low_24h'] = float(data['l'])
+                                self.r.set("market_status", json.dumps(list(market_data.values())))
+                                continue
+
                             bid_p, bid_q = float(data['b']), float(data['B'])
                             ask_p, ask_q = float(data['a']), float(data['A'])
 
@@ -69,7 +80,7 @@ class BinanceScanner:
                             # Ubicacion del Rango y Captura del Suelo Real de los 15 minutos (900 muestras)
                             if history_len > 1:
                                 max_p = max(history)
-                                min_p = min(history)  # 🔍 SUELO REAL DE 15 MINUTOS AUDITADO
+                                min_p = min(history)
                                 if max_p > min_p:
                                     range_pct = ((current_mid - min_p) / (max_p - min_p)) * 100
 
@@ -81,15 +92,15 @@ class BinanceScanner:
                             else:
                                 price_direction = "NEUTRAL"
 
-                            market_data[symbol] = {
+                            market_data[symbol].update({
                                 "symbol": symbol,
                                 "bid": bid_p,
                                 "ask": ask_p,
                                 "imbalance": imbalance,
                                 "price_direction": price_direction,
                                 "range_pct": range_pct,
-                                "min_price_15m": min_p
-                            }
+                                "min_price_15m": min_p,
+                            })
 
                             # Inyeccion masiva del estado actual en Redis
                             self.r.set("market_status", json.dumps(list(market_data.values())))
@@ -97,11 +108,11 @@ class BinanceScanner:
                         except (websockets.exceptions.ConnectionClosed, asyncio.exceptions.CancelledError):
                             break
                         except Exception as e:
-                            print(f"[ERROR] SCANNER: Fallo en el procesamiento de datos del stream: {e}")
+                            print(f"[ERROR] SCANNER: Stream data processing failed: {e}")
                             await asyncio.sleep(1)
 
             except Exception as e:
-                print(f"[ERROR] SCANNER: Desconexion del servidor WebSocket. Reintentando en 5s... ({e})")
+                print(f"[ERROR] SCANNER: WebSocket server disconnected. Retrying in 5s... ({e})")
                 await asyncio.sleep(5)
 
 if __name__ == "__main__":
@@ -109,4 +120,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(scanner.start_scanning())
     except KeyboardInterrupt:
-        print("\n[INFO] SCANNER: Radar apagado por el usuario.")
+        print("\n[INFO] SCANNER: Scanner stopped by user.")

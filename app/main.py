@@ -15,15 +15,15 @@ async def _scanner_watchdog():
     global scanner_process
     while not _scanner_stop_event.is_set():
         if scanner_process is None or scanner_process.returncode is not None:
-            print("[WATCHDOG] Scanner caido. Reiniciando en 2s...")
+            print("[WATCHDOG] Scanner down. Restarting in 2s...")
             await asyncio.sleep(2)
             try:
                 scanner_process = await asyncio.create_subprocess_exec(
                     "python3", "app/scanner.py"
                 )
-                print("[WATCHDOG] Scanner reiniciado.")
+                print("[WATCHDOG] Scanner restarted.")
             except Exception as e:
-                print(f"[WATCHDOG] Error al reiniciar scanner: {e}")
+                print(f"[WATCHDOG] Failed to restart scanner: {e}")
         try:
             await asyncio.wait_for(scanner_process.wait(), timeout=5)
         except asyncio.TimeoutError:
@@ -46,10 +46,10 @@ async def lifespan(app: FastAPI):
 
     if not r.exists("wallet"):
         r.set("wallet", json.dumps({"balance": 100.0, "pnl": 0.0}))
-        print("[INIT] Redis vacio: Se ha creado una wallet nueva de simulacion con $100.00.")
+        print("[INIT] Redis empty: Created new simulation wallet with $100.00.")
     else:
         wallet_actual = load_wallet()
-        print(f"[INIT] WALLET DETECTADA: Conservando progreso. Balance disponible: ${wallet_actual['balance']:.2f}")
+        print(f"[INIT] WALLET FOUND: Keeping progress. Available balance: ${wallet_actual['balance']:.2f}")
 
     asyncio.create_task(monitoring_loop())
 
@@ -112,7 +112,7 @@ async def monitoring_loop():
             # Filtro defensivo robusto contra nulos o arranques parciales
             market = {item['symbol']: item for item in market_data if isinstance(item, dict) and 'symbol' in item}
         except Exception as e:
-            print(f"[ERROR] Procesando market_status desde Redis: {e}")
+            print(f"[ERROR] Error processing market_status from Redis: {e}")
             continue
 
         if not market:
@@ -145,11 +145,11 @@ async def monitoring_loop():
                     r.hdel("open_positions", symbol)
 
                     if cur_price <= stop_loss_price:
-                        r.setex(f"cooldown:{symbol}", 300, "bloqueado")
-                        print(f"[ALERTA] SL ESTRUCTURADO GATILLADO en {symbol}. Precio rompio suelo de {stop_loss_price:.4f}. Salida real en {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
+                        r.setex(f"cooldown:{symbol}", 300, "blocked")
+                        print(f"[ALERT] STRUCTURAL STOP LOSS TRIGGERED on {symbol}. Price broke floor of {stop_loss_price:.4f}. Exit at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
                     else:
-                        r.setex(f"cooldown:{symbol}", 60, "bloqueado")
-                        print(f"[LOG] TAKE PROFIT ALCANZADO en {symbol} a {sell_price_effective:.2f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
+                        r.setex(f"cooldown:{symbol}", 60, "blocked")
+                        print(f"[LOG] TAKE PROFIT REACHED on {symbol} at {sell_price_effective:.2f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
             # --- 2. PROCESAR COMPRAS CON CONFIRMACION DE REBOTE ---
             for item in market.values():
@@ -157,12 +157,20 @@ async def monitoring_loop():
                 imbalance = float(item['imbalance'])
                 price_direction = item.get('price_direction', 'NEUTRAL')
                 range_pct = float(item.get('range_pct', 50.0))
-                min_price_15m = float(item.get('min_price_15m', 0.0))
+                high_24h = float(item.get('high_24h', 0.0))
+                low_24h = float(item.get('low_24h', 0.0))
 
                 wallet = load_wallet()
                 in_cooldown = r.exists(f"cooldown:{symbol}")
 
-                if imbalance >= 15 and price_direction == "UP" and (25.0 <= range_pct <= 50.0) and not in_cooldown and symbol not in r.hkeys("open_positions") and wallet['balance'] >= 10.0:
+                if high_24h > low_24h:
+                    range_24h_pct = ((float(item['bid']) + float(item['ask'])) / 2 - low_24h) / (high_24h - low_24h) * 100
+                else:
+                    range_24h_pct = 50.0
+
+                if (imbalance >= 15 and price_direction == "UP" and not in_cooldown
+                    and symbol not in r.hkeys("open_positions") and wallet['balance'] >= 10.0
+                    and range_24h_pct <= 30):
                     price = (float(item['bid']) + float(item['ask'])) / 2
                     invest = 10.0
                     qty, buy_price_effective = compute_effective_buy_amount(invest, price)
@@ -175,10 +183,10 @@ async def monitoring_loop():
                         "entry_price_effective": buy_price_effective,
                         "amount": qty,
                         "cost": invest,
-                        "stop_loss_price": min_price_15m
+                        "stop_loss_price": low_24h
                     }))
 
-                    print(f"[LOG] Compra por Rebote Confirmado en {symbol} a {buy_price_effective:.4f}. Rango: {range_pct:.1f}% | SL en Suelo Fijo: {min_price_15m:.4f} | Balance: {wallet['balance']:.2f}")
+                    print(f"[LOG] Confirmed Bounce Buy on {symbol} at {buy_price_effective:.4f}. Range24h: {range_24h_pct:.1f}% | SL at Low24h: {low_24h:.4f} | Balance: {wallet['balance']:.2f}")
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
@@ -229,10 +237,10 @@ async def simulate_buy(request: Request):
     async with lock:
         wallet = load_wallet()
         if wallet['balance'] < 10.0:
-            return {"status": "error", "msg": "Saldo insuficiente"}
+            return {"status": "error", "msg": "Insufficient balance"}
 
         if r.hexists("open_positions", symbol):
-            return {"status": "error", "msg": "Ya tienes una posicion abierta"}
+            return {"status": "error", "msg": "Already have an open position"}
 
         qty, buy_price_effective = compute_effective_buy_amount(10.0, market_price)
         wallet['balance'] = float(wallet['balance']) - 10.0
@@ -243,7 +251,9 @@ async def simulate_buy(request: Request):
         if market_raw:
             for item in json.loads(market_raw):
                 if item.get('symbol') == symbol:
-                    sl_manual = float(item.get('min_price_15m', market_price * 0.995))
+                    low_24h = float(item.get('low_24h', 0.0))
+                    if low_24h > 0:
+                        sl_manual = low_24h
                     break
 
         r.hset("open_positions", symbol, json.dumps({
