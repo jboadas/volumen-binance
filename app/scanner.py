@@ -12,7 +12,7 @@ class BinanceScanner:
             'btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt',
             'adausdt', 'avaxusdt', 'linkusdt'
         ]
-        self.market_data = {s.upper(): {"high_24h": 0.0, "low_24h": 0.0, "change_24h_pct": 0.0} for s in self.symbols}
+        self.market_data = {s.upper(): {} for s in self.symbols}
         # 1 hour window = 3600 samples (1 per second)
         self.price_history = {s.upper(): deque(maxlen=3600) for s in self.symbols}
         self.last_tick_time = {s.upper(): 0 for s in self.symbols}
@@ -48,9 +48,6 @@ class BinanceScanner:
                         self.market_data[sym].update({
                             "volume_spike": round(spike, 2),
                             "avg_volume": round(avg, 4),
-                            "high_24h": float(item['highPrice']),
-                            "low_24h": float(item['lowPrice']),
-                            "change_24h_pct": float(item['priceChangePercent']),
                         })
                 self.r.set("market_status", json.dumps(list(self.market_data.values())))
             except Exception as e:
@@ -108,6 +105,11 @@ class BinanceScanner:
                                 if max_p > min_p:
                                     range_pct = ((current_mid - min_p) / (max_p - min_p)) * 100
 
+                            change_1h_pct = 0.0
+                            if history_len >= 60 and history[0] > 0:
+                                window = min(history_len, 3600)
+                                change_1h_pct = ((current_mid - history[-window]) / history[-window]) * 100
+
                             bid_rising = current_mid > self.prev_mid[symbol] if self.prev_mid[symbol] > 0 else False
                             self.prev_mid[symbol] = current_mid
 
@@ -130,6 +132,7 @@ class BinanceScanner:
                                 "low_1h": min_p,
                                 "high_1h": max_p,
                                 "bid_rising": bid_rising,
+                                "change_1h_pct": round(change_1h_pct, 2),
                             })
 
                             self.r.set("market_status", json.dumps(list(self.market_data.values())))

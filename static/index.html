@@ -520,7 +520,7 @@
                                 <th title="Trend alignment: ✓✓ = strong, ✓✗ = possible reversal">Trend</th>
                                 <th title="Current price position within the 1h range. 0% = 1h low, 100% = 1h high. Buy only when <= 30%">Range</th>
                                 <th title="Real trade volume spike relative to 5-min average. >= 1.5x = abnormal activity">Vol</th>
-                                <th title="24-hour price change percent. Positive = bullish macro trend, negative = bearish">Macro</th>
+                                <th title="1-hour price change percent. Positive = bullish short-term trend, negative = bearish. Buy only when > -5%">Macro</th>
                                 <th title="Buy (all conditions met), Near (partial), Wait (not ready) or Held (already in position)">Action</th>
                             </tr>
                         </thead>
@@ -700,7 +700,7 @@
                         };
                         const imbalanceOk = parseFloat(item.imbalance) >= (IMBALANCE_THRESHOLDS[item.symbol] || 5);
                         const dirOk = item.price_direction === "UP";
-                        const macroOk = parseFloat(item.change_24h_pct) > -5;
+                        const macroOk = parseFloat(item.change_1h_pct || 0) > -5;
 
                         const btnClass = isAlreadyBought ? 'btn-far' : (imbalanceOk && dirOk ? 'btn-ready' : 'btn-far');
                         const btnText = isAlreadyBought ? 'Held' : (imbalanceOk && dirOk ? 'Buy' : 'Wait');
@@ -728,7 +728,7 @@
                                     ${parseFloat(item.volume_spike || 0).toFixed(1)}x
                                 </td>
                                 <td style="font-weight: 600; color: ${macroOk ? '#38a169' : '#e53e3e'};">
-                                    ${parseFloat(item.change_24h_pct).toFixed(1)}%
+                                    ${parseFloat(item.change_1h_pct || 0).toFixed(1)}%
                                 </td>
                                 <td>
                                     <button class="btn-action ${btnClass}" onclick="manualBuy('${item.symbol}', ${midPrice})" ${isAlreadyBought ? 'disabled' : ''}>
@@ -785,7 +785,7 @@
                 <tr><td>Bid rising</td><td>Mid price increased in the last second (micro-confirmation)</td></tr>
                 <tr><td>Volume spike ≥ 1.5x</td><td>Real trade volume > 1.5x the 5-minute average (from !ticker@arr)</td></tr>
                 <tr><td>Range ≤ 30%</td><td>Price in the lower 30% of the 1h range (near the low)</td></tr>
-                <tr><td>Macro > -5%</td><td>Asset hasn't dropped more than 5% in 24 hours</td></tr>
+                <tr><td>Macro > -5%</td><td>Asset hasn't dropped more than 5% in the last hour (1h price change)</td></tr>
                 <tr><td>No cooldown</td><td>300s cooldown after stop loss, 60s after take profit</td></tr>
                 <tr><td>No position</td><td>No open position for this symbol</td></tr>
                 <tr><td>Balance ≥ $10</td><td>Enough funds in the simulation wallet</td></tr>
