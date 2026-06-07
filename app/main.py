@@ -25,14 +25,14 @@ scanner_process = None
 _scanner_stop_event = asyncio.Event()
 
 SYMBOL_CONFIG = {
-    "BTCUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.5, "sl_pct": 1.5},
-    "ETHUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.5, "sl_pct": 1.5},
-    "SOLUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.5, "sl_pct": 1.5},
-    "BNBUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.5, "sl_pct": 1.5},
-    "XRPUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0},
-    "ADAUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0},
-    "AVAXUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0},
-    "LINKUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0},
+    "BTCUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.8, "sl_pct": 1.5},
+    "ETHUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.8, "sl_pct": 1.5},
+    "SOLUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.8, "sl_pct": 1.5},
+    "BNBUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.8, "sl_pct": 1.5},
+    "XRPUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0},
+    "ADAUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0},
+    "AVAXUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0},
+    "LINKUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0},
 }
 
 DEFAULT_CONFIG = {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0}
@@ -138,41 +138,19 @@ def compute_unrealized_net_pct(position, market_price):
     return ((val_retorno - cost) / cost) * 100
 
 def should_buy(data, cfg):
+    imbalance = float(data['imbalance'])
+    if imbalance < cfg['imbalance']:
+        return False, f"imbalance {imbalance:.1f}x < {cfg['imbalance']}x"
+
     range_pct = float(data.get('range_pct', 100))
-    if range_pct > 70:
-        return False, f"range={range_pct:.0f}% > 70 (barranco)"
+    if range_pct > 90:
+        return False, f"range {range_pct:.0f}% > 90%"
 
     change_1h = float(data.get('change_1h_pct', 0))
-    if change_1h < -5.0:
-        return False, f"macro={change_1h:.1f}% < -5 (barranco)"
+    if change_1h < -8.0:
+        return False, f"1h change {change_1h:.1f}% < -8%"
 
-    score = 0
-    parts = []
-
-    imbalance = float(data['imbalance'])
-    if imbalance >= cfg['imbalance']:
-        score += 2
-        parts.append(f"imbal({imbalance:.1f}x)+2")
-    else:
-        parts.append(f"imbal({imbalance:.1f}x)<{cfg['imbalance']}")
-
-    if data.get('price_direction') == 'UP':
-        score += 2
-        parts.append("dirUP+2")
-    else:
-        parts.append(f"dir={data.get('price_direction')}")
-
-    if data.get('bid_rising'):
-        score += 1
-        parts.append("bid↑+1")
-    else:
-        parts.append("bid↓")
-
-    ok = score >= 3
-    if ok:
-        return True, f"score={score}/5 ✓ ({', '.join(parts)})"
-    else:
-        return False, f"score={score}/5 ✗ ({', '.join(parts)})"
+    return True, f"imbalance {imbalance:.1f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%"
 
 async def monitoring_loop():
     while True:
@@ -208,9 +186,12 @@ async def monitoring_loop():
                 high_water_mark = float(pos.get("high_water_mark", float(pos.get("buy_price", 0))))
                 trailing_active = pos.get("trailing_active", False)
 
-                # Update high water mark
+                # Update high water mark and trailing stop loss
                 if cur_price > high_water_mark:
                     high_water_mark = cur_price
+                    new_sl = high_water_mark * (1 - cfg['sl_pct'] / 100)
+                    if new_sl > stop_loss_price:
+                        stop_loss_price = new_sl
 
                 # Activate trailing on first touch of min TP
                 if not trailing_active:
@@ -221,6 +202,7 @@ async def monitoring_loop():
                 # Persist tracking state
                 pos['high_water_mark'] = high_water_mark
                 pos['trailing_active'] = trailing_active
+                pos['stop_loss_price'] = stop_loss_price
                 r.hset("open_positions", symbol, json.dumps(pos))
 
                 # Sell checks
@@ -272,7 +254,7 @@ async def monitoring_loop():
                         r.setex(f"cooldown:{symbol}", 60, "blocked")
                         log.info(f"[LOG] {reason} on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
-            # --- 2. PROCESAR COMPRAS POR SCORE ---
+            # --- 2. PROCESAR COMPRAS (imbalance + rango + macro) ---
             for item in market.values():
                 symbol = item['symbol']
                 cfg = SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
