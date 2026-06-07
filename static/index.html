@@ -448,6 +448,18 @@
             color: #63b3ed;
             text-decoration: underline;
         }
+
+        .reason-badge {
+            display: inline-block;
+            padding: 1px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .reason-tp { background: #22543d; color: #68d391; }
+        .reason-sl { background: #522224; color: #fc8181; }
+        .reason-manual { background: #2a4365; color: #90cdf4; }
     </style>
 </head>
 
@@ -504,18 +516,41 @@
                                 <th title="Trading pair symbol (e.g. BTCUSDT)">Symbol</th>
                                 <th title="Ratio of bid liquidity to ask liquidity. >= 5x = strong buying pressure">Imbalance</th>
                                 <th title="Short-term trend direction: UP (1m+5m rising), DOWN (1m+5m falling), NEUTRAL">Dir</th>
-                                <th title="Current price position within the 24h range. 0% = low, 100% = high. Buy only when <= 30%">Range</th>
+                                <th title="Trend alignment: ✓✓ = strong, ✓✗ = possible reversal">Trend</th>
+                                <th title="Current price position within the 1h range. 0% = 1h low, 100% = 1h high. Buy only when <= 30%">Range</th>
                                 <th title="24-hour price change percent. Positive = bullish macro trend, negative = bearish">Macro</th>
                                 <th title="Buy (all conditions met), Near (partial), Wait (not ready) or Held (already in position)">Action</th>
                             </tr>
                         </thead>
                         <tbody id="market-tbody">
                             <tr>
-                                <td colspan="6" class="empty-state">Loading...</td>
+                                <td colspan="7" class="empty-state">Loading...</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
+            </div>
+        </div>
+
+        <div class="panel" style="margin-top: 12px;">
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Entry</th>
+                            <th>Exit</th>
+                            <th>PnL %</th>
+                            <th>Reason</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trades-tbody">
+                        <tr>
+                            <td colspan="6" class="empty-state">No trades yet</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
@@ -654,10 +689,8 @@
                         const isAlreadyBought = openSymbols.includes(item.symbol);
                         const rowStyle = isAlreadyBought ? 'background-color: rgba(56, 161, 105, 0.15);' : '';
 
-                        const high24h = parseFloat(item.high_24h) || 0;
-                        const low24h = parseFloat(item.low_24h) || 0;
-                        const range24hPct = high24h > low24h ? ((midPrice - low24h) / (high24h - low24h)) * 100 : 50;
-                        const rangeColor = range24hPct <= 30 ? '#38a169' : range24hPct <= 50 ? '#d69e2e' : '#e53e3e';
+                        const rangePct = parseFloat(item.range_pct) ?? 50;
+                        const rangeColor = rangePct <= 30 ? '#38a169' : rangePct <= 50 ? '#d69e2e' : '#e53e3e';
 
                         const imbalanceOk = parseFloat(item.imbalance) >= 5;
                         const dirOk = item.price_direction === "UP";
@@ -675,8 +708,15 @@
                                 <td style="font-weight: bold; font-size: 14px; color: ${item.price_direction === 'UP' ? '#48bb78' : item.price_direction === 'DOWN' ? '#f56565' : '#718096'};">
                                     ${item.price_direction === 'UP' ? '↑' : item.price_direction === 'DOWN' ? '↓' : '→'}
                                 </td>
+                                <td style="font-weight: 600; font-size: 11px; text-align: center;">
+                                    ${item.trend_1m === 'UP' && item.trend_5m === 'UP' ? '<span style="color:#38a169">↑↑</span>' :
+                                      item.trend_1m === 'DOWN' && item.trend_5m === 'DOWN' ? '<span style="color:#e53e3e">↓↓</span>' :
+                                      item.trend_1m === 'UP' && item.trend_5m === 'DOWN' ? '<span style="color:#d69e2e">↑↓</span>' :
+                                      item.trend_1m === 'DOWN' && item.trend_5m === 'UP' ? '<span style="color:#d69e2e">↓↑</span>' :
+                                      '<span style="color:#718096">——</span>'}
+                                </td>
                                 <td style="font-weight: 600; color: ${rangeColor};">
-                                    ${range24hPct.toFixed(0)}%
+                                    ${rangePct.toFixed(0)}%
                                 </td>
                                 <td style="font-weight: 600; color: ${macroOk ? '#38a169' : '#e53e3e'};">
                                     ${parseFloat(item.change_24h_pct).toFixed(1)}%
@@ -691,7 +731,31 @@
                     });
                     marketTbody.innerHTML = marketHtml;
                 } else {
-                    marketTbody.innerHTML = `<tr><td colspan="6" class="empty-state">No market data available</td></tr>`;
+                    marketTbody.innerHTML = `<tr><td colspan="7" class="empty-state">No market data available</td></tr>`;
+                }
+
+                const resTrades = await fetch('/api/trades');
+                const trades = await resTrades.json();
+                const tradesTbody = document.getElementById('trades-tbody');
+                if (trades.length > 0) {
+                    let tradesHtml = '';
+                    trades.forEach(t => {
+                        const pnlClass = t.pnl_pct >= 0 ? 'value-positive' : 'value-negative';
+                        const ts = new Date(t.ts * 1000).toLocaleTimeString();
+                        tradesHtml += `
+                            <tr>
+                                <td style="font-weight: 600; color: #fff;">${t.symbol}</td>
+                                <td>${parseFloat(t.entry).toFixed(4)}</td>
+                                <td>${parseFloat(t.exit).toFixed(4)}</td>
+                                <td class="${pnlClass}">${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct}%</td>
+                                <td><span class="reason-badge reason-${t.reason.toLowerCase()}">${t.reason}</span></td>
+                                <td style="color: #718096; font-size: 11px;">${ts}</td>
+                            </tr>
+                        `;
+                    });
+                    tradesTbody.innerHTML = tradesHtml;
+                } else {
+                    tradesTbody.innerHTML = `<tr><td colspan="6" class="empty-state">No trades yet</td></tr>`;
                 }
             } catch (error) {
                 console.error("Error updating dashboard:", error);
@@ -707,9 +771,11 @@
             <h2>Auto-Buy Conditions</h2>
             <table>
                 <tr><th>Condition</th><th>Detail</th></tr>
-                <tr><td>Imbalance ≥ 5x</td><td>Bid liquidity 5x greater than ask liquidity (buying pressure)</td></tr>
+                <tr><td>Imbalance ≥ 3-8x</td><td>Per symbol: BTC/ETH/SOL ≥3x, XRP/ADA/DOT ≥5x, DOGE/TRX ≥8x</td></tr>
                 <tr><td>Direction = UP</td><td>1-minute and 5-minute trends both rising</td></tr>
-                <tr><td>Range ≤ 30%</td><td>Price in the lower 30% of the 24h range (near the low)</td></tr>
+                <tr><td>Bid rising</td><td>Mid price increased in the last second (micro-confirmation)</td></tr>
+                <tr><td>Volume spike ≥ 1.5x</td><td>Real trade volume > 1.5x the 5-minute average (from !ticker@arr)</td></tr>
+                <tr><td>Range ≤ 30%</td><td>Price in the lower 30% of the 1h range (near the low)</td></tr>
                 <tr><td>Macro > -5%</td><td>Asset hasn't dropped more than 5% in 24 hours</td></tr>
                 <tr><td>No cooldown</td><td>300s cooldown after stop loss, 60s after take profit</td></tr>
                 <tr><td>No position</td><td>No open position for this symbol</td></tr>

@@ -1,6 +1,7 @@
 import json
 import redis
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -11,12 +12,30 @@ lock = asyncio.Lock()
 scanner_process = None
 _scanner_stop_event = asyncio.Event()
 
+SYMBOL_CONFIG = {
+    "BTCUSDT": {"imbalance": 3, "tp_pct": 1.0, "sl_pct": 1.5},
+    "ETHUSDT": {"imbalance": 3, "tp_pct": 1.0, "sl_pct": 1.5},
+    "SOLUSDT": {"imbalance": 3, "tp_pct": 1.0, "sl_pct": 1.5},
+    "BNBUSDT": {"imbalance": 3, "tp_pct": 1.0, "sl_pct": 1.5},
+    "XRPUSDT": {"imbalance": 5, "tp_pct": 1.5, "sl_pct": 2.0},
+    "ADAUSDT": {"imbalance": 5, "tp_pct": 1.5, "sl_pct": 2.0},
+    "DOTUSDT": {"imbalance": 5, "tp_pct": 1.5, "sl_pct": 2.0},
+    "DOGEUSDT": {"imbalance": 8, "tp_pct": 2.0, "sl_pct": 3.0},
+    "TRXUSDT": {"imbalance": 8, "tp_pct": 2.0, "sl_pct": 3.0},
+}
+
+DEFAULT_CONFIG = {"imbalance": 5, "tp_pct": 1.5, "sl_pct": 2.0}
+
 async def _scanner_watchdog():
     global scanner_process
     while not _scanner_stop_event.is_set():
         if scanner_process is None or scanner_process.returncode is not None:
+            if _scanner_stop_event.is_set():
+                break
             print("[WATCHDOG] Scanner down. Restarting in 2s...")
             await asyncio.sleep(2)
+            if _scanner_stop_event.is_set():
+                break
             try:
                 scanner_process = await asyncio.create_subprocess_exec(
                     "python3", "app/scanner.py"
@@ -126,12 +145,13 @@ async def monitoring_loop():
                     continue
                 m = market[symbol]
                 cur_price = (float(m['bid']) + float(m['ask'])) / 2
+                cfg = SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
 
                 pnl = compute_unrealized_net_pct(pos, cur_price)
 
                 stop_loss_price = float(pos.get("stop_loss_price", float(pos.get("buy_price", 0)) * 0.995))
 
-                if pnl >= 1.5 or cur_price <= stop_loss_price:
+                if pnl >= cfg['tp_pct'] or cur_price <= stop_loss_price:
                     wallet = load_wallet()
                     amount = float(pos['amount'])
                     cost = float(pos.get('cost', 0.0))
@@ -144,37 +164,54 @@ async def monitoring_loop():
                     r.set("wallet", json.dumps(wallet))
                     r.hdel("open_positions", symbol)
 
-                    if cur_price <= stop_loss_price:
+                    reason = "SL" if cur_price <= stop_loss_price else "TP"
+                    trade = {
+                        "symbol": symbol,
+                        "entry": float(pos.get('buy_price', 0)),
+                        "exit": cur_price,
+                        "qty": amount,
+                        "cost": cost,
+                        "return": round(val_retorno, 4),
+                        "pnl_pct": round(pct_ganancia, 2),
+                        "reason": reason,
+                        "ts": time.time()
+                    }
+                    r.lpush("trade_history", json.dumps(trade))
+                    r.ltrim("trade_history", 0, 199)
+
+                    if reason == "SL":
                         r.setex(f"cooldown:{symbol}", 300, "blocked")
-                        print(f"[ALERT] STRUCTURAL STOP LOSS TRIGGERED on {symbol}. Price broke floor of {stop_loss_price:.4f}. Exit at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
+                        print(f"[ALERT] STOP LOSS on {symbol}. Exit at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
                     else:
                         r.setex(f"cooldown:{symbol}", 60, "blocked")
-                        print(f"[LOG] TAKE PROFIT REACHED on {symbol} at {sell_price_effective:.2f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
+                        print(f"[LOG] TAKE PROFIT on {symbol} at {sell_price_effective:.2f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
             # --- 2. PROCESAR COMPRAS CON CONFIRMACION DE REBOTE ---
             for item in market.values():
                 symbol = item['symbol']
+                cfg = SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
                 imbalance = float(item['imbalance'])
                 price_direction = item.get('price_direction', 'NEUTRAL')
                 range_pct = float(item.get('range_pct', 50.0))
-                high_24h = float(item.get('high_24h', 0.0))
-                low_24h = float(item.get('low_24h', 0.0))
+                bid_rising = item.get('bid_rising', False)
+                low_1h = float(item.get('low_1h', 0.0))
+                volume_spike = float(item.get('volume_spike', 0.0))
 
                 wallet = load_wallet()
                 in_cooldown = r.exists(f"cooldown:{symbol}")
 
-                if high_24h > low_24h:
-                    range_24h_pct = ((float(item['bid']) + float(item['ask'])) / 2 - low_24h) / (high_24h - low_24h) * 100
-                else:
-                    range_24h_pct = 50.0
-
-                if (imbalance >= 5 and price_direction == "UP" and not in_cooldown
+                if (imbalance >= cfg['imbalance'] and price_direction == "UP" and bid_rising
+                    and volume_spike >= 1.5
+                    and not in_cooldown
                     and symbol not in r.hkeys("open_positions") and wallet['balance'] >= 10.0
-                    and range_24h_pct <= 30
+                    and range_pct <= 30
                     and float(item.get('change_24h_pct', 0.0)) > -5):
                     price = (float(item['bid']) + float(item['ask'])) / 2
                     invest = 10.0
                     qty, buy_price_effective = compute_effective_buy_amount(invest, price)
+
+                    sl_price = low_1h if low_1h > 0 else price * (1 - cfg['sl_pct'] / 100)
+                    sl_price = min(sl_price, price * (1 - cfg['sl_pct'] / 100))
 
                     wallet['balance'] = float(wallet['balance']) - float(invest)
                     r.set("wallet", json.dumps(wallet))
@@ -184,10 +221,12 @@ async def monitoring_loop():
                         "entry_price_effective": buy_price_effective,
                         "amount": qty,
                         "cost": invest,
-                        "stop_loss_price": low_24h
+                        "stop_loss_price": sl_price,
                     }))
 
-                    print(f"[LOG] Confirmed Bounce Buy on {symbol} at {buy_price_effective:.4f}. Range24h: {range_24h_pct:.1f}% | SL at Low24h: {low_24h:.4f} | Balance: {wallet['balance']:.2f}")
+                    print(f"[LOG] Confirmed Buy on {symbol} at {buy_price_effective:.4f}. "
+                          f"Range1h: {range_pct:.1f}% | Imbalance: {imbalance:.1f}x | "
+                          f"SL: {sl_price:.4f} | Balance: {wallet['balance']:.2f}")
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
@@ -248,21 +287,23 @@ async def simulate_buy(request: Request):
         r.set("wallet", json.dumps(wallet))
 
         market_raw = r.get("market_status")
-        sl_manual = market_price * 0.995
+        low_1h = 0.0
         if market_raw:
             for item in json.loads(market_raw):
                 if item.get('symbol') == symbol:
-                    low_24h = float(item.get('low_24h', 0.0))
-                    if low_24h > 0:
-                        sl_manual = low_24h
+                    low_1h = float(item.get('low_1h', 0.0))
                     break
+
+        cfg = SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
+        sl_price = low_1h if low_1h > 0 else market_price * (1 - cfg['sl_pct'] / 100)
+        sl_price = min(sl_price, market_price * (1 - cfg['sl_pct'] / 100))
 
         r.hset("open_positions", symbol, json.dumps({
             "buy_price": market_price,
             "entry_price_effective": buy_price_effective,
             "amount": qty,
             "cost": 10.0,
-            "stop_loss_price": sl_manual
+            "stop_loss_price": sl_price
         }))
         return {"status": "ok"}
 
@@ -290,6 +331,19 @@ async def simulate_sell(request: Request):
         r.set("wallet", json.dumps(wallet))
 
         r.hdel("open_positions", symbol)
+
+        r.lpush("trade_history", json.dumps({
+            "symbol": symbol,
+            "entry": float(pos.get('buy_price', 0)),
+            "exit": sell_price,
+            "qty": amount,
+            "cost": cost,
+            "return": round(val_retorno, 4),
+            "pnl_pct": round(pct_ganancia, 2),
+            "reason": "MANUAL",
+            "ts": time.time()
+        }))
+        r.ltrim("trade_history", 0, 199)
         return {"status": "ok"}
 
 @app.post("/api/wallet/reset")
@@ -297,6 +351,11 @@ async def reset_wallet():
     async with lock:
         r.set("wallet", json.dumps({"balance": 100.0, "pnl": 0.0}))
     return {"status": "ok"}
+
+@app.get("/api/trades")
+async def get_trades():
+    raw = r.lrange("trade_history", 0, 49)
+    return [json.loads(t) for t in raw]
 
 if __name__ == "__main__":
     import uvicorn
