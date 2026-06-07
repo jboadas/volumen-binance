@@ -13,23 +13,23 @@ scanner_process = None
 _scanner_stop_event = asyncio.Event()
 
 SYMBOL_CONFIG = {
-    "BTCUSDT": {"imbalance": 3, "tp_pct": 1.0, "sl_pct": 1.5},
-    "ETHUSDT": {"imbalance": 3, "tp_pct": 1.0, "sl_pct": 1.5},
-    "SOLUSDT": {"imbalance": 3, "tp_pct": 1.0, "sl_pct": 1.5},
-    "BNBUSDT": {"imbalance": 3, "tp_pct": 1.0, "sl_pct": 1.5},
-    "XRPUSDT": {"imbalance": 5, "tp_pct": 1.5, "sl_pct": 2.0},
-    "ADAUSDT": {"imbalance": 5, "tp_pct": 1.5, "sl_pct": 2.0},
-    "DOTUSDT": {"imbalance": 5, "tp_pct": 1.5, "sl_pct": 2.0},
-    "DOGEUSDT": {"imbalance": 8, "tp_pct": 2.0, "sl_pct": 3.0},
-    "TRXUSDT": {"imbalance": 8, "tp_pct": 2.0, "sl_pct": 3.0},
+    "BTCUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.5, "sl_pct": 1.5},
+    "ETHUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.5, "sl_pct": 1.5},
+    "SOLUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.5, "sl_pct": 1.5},
+    "BNBUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.5, "sl_pct": 1.5},
+    "XRPUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0},
+    "ADAUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0},
+    "AVAXUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0},
+    "LINKUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0},
 }
 
-DEFAULT_CONFIG = {"imbalance": 5, "tp_pct": 1.5, "sl_pct": 2.0}
+DEFAULT_CONFIG = {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0}
 
 async def _scanner_watchdog():
     global scanner_process
     while not _scanner_stop_event.is_set():
         if scanner_process is None or scanner_process.returncode is not None:
+            await asyncio.sleep(0.5)
             if _scanner_stop_event.is_set():
                 break
             print("[WATCHDOG] Scanner down. Restarting in 2s...")
@@ -138,7 +138,7 @@ async def monitoring_loop():
             continue
 
         async with lock:
-            # --- 1. PROCESAR VENTAS INDEPENDIENTES ---
+            # --- 1. PROCESAR VENTAS CON TRAILING TP ---
             for symbol, pos_raw in positions.items():
                 pos = json.loads(pos_raw)
                 if symbol not in market:
@@ -147,11 +147,41 @@ async def monitoring_loop():
                 cur_price = (float(m['bid']) + float(m['ask'])) / 2
                 cfg = SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
 
-                pnl = compute_unrealized_net_pct(pos, cur_price)
-
                 stop_loss_price = float(pos.get("stop_loss_price", float(pos.get("buy_price", 0)) * 0.995))
+                high_water_mark = float(pos.get("high_water_mark", float(pos.get("buy_price", 0))))
+                trailing_active = pos.get("trailing_active", False)
 
-                if pnl >= cfg['tp_pct'] or cur_price <= stop_loss_price:
+                # Update high water mark
+                if cur_price > high_water_mark:
+                    high_water_mark = cur_price
+
+                # Activate trailing on first touch of min TP
+                if not trailing_active:
+                    pnl = compute_unrealized_net_pct(pos, cur_price)
+                    if pnl >= cfg['tp_pct']:
+                        trailing_active = True
+
+                # Persist tracking state
+                pos['high_water_mark'] = high_water_mark
+                pos['trailing_active'] = trailing_active
+                r.hset("open_positions", symbol, json.dumps(pos))
+
+                # Sell checks
+                pnl = compute_unrealized_net_pct(pos, cur_price)
+                should_sell = False
+                reason = ""
+
+                if cur_price <= stop_loss_price:
+                    reason = "SL"
+                    should_sell = True
+                elif trailing_active and cur_price <= high_water_mark * (1 - cfg['trail_pct'] / 100):
+                    reason = "TRAIL"
+                    should_sell = True
+                elif trailing_active and pnl < cfg['tp_pct']:
+                    reason = "TP"
+                    should_sell = True
+
+                if should_sell:
                     wallet = load_wallet()
                     amount = float(pos['amount'])
                     cost = float(pos.get('cost', 0.0))
@@ -164,7 +194,6 @@ async def monitoring_loop():
                     r.set("wallet", json.dumps(wallet))
                     r.hdel("open_positions", symbol)
 
-                    reason = "SL" if cur_price <= stop_loss_price else "TP"
                     trade = {
                         "symbol": symbol,
                         "entry": float(pos.get('buy_price', 0)),
@@ -181,10 +210,10 @@ async def monitoring_loop():
 
                     if reason == "SL":
                         r.setex(f"cooldown:{symbol}", 300, "blocked")
-                        print(f"[ALERT] STOP LOSS on {symbol}. Exit at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
+                        print(f"[ALERT] SL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
                     else:
                         r.setex(f"cooldown:{symbol}", 60, "blocked")
-                        print(f"[LOG] TAKE PROFIT on {symbol} at {sell_price_effective:.2f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
+                        print(f"[LOG] {reason} on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
             # --- 2. PROCESAR COMPRAS CON CONFIRMACION DE REBOTE ---
             for item in market.values():
@@ -222,6 +251,8 @@ async def monitoring_loop():
                         "amount": qty,
                         "cost": invest,
                         "stop_loss_price": sl_price,
+                        "high_water_mark": price,
+                        "trailing_active": False,
                     }))
 
                     print(f"[LOG] Confirmed Buy on {symbol} at {buy_price_effective:.4f}. "
@@ -303,7 +334,9 @@ async def simulate_buy(request: Request):
             "entry_price_effective": buy_price_effective,
             "amount": qty,
             "cost": 10.0,
-            "stop_loss_price": sl_price
+            "stop_loss_price": sl_price,
+            "high_water_mark": market_price,
+            "trailing_active": False,
         }))
         return {"status": "ok"}
 

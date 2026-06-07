@@ -10,7 +10,7 @@ class BinanceScanner:
         self.r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
         self.symbols = [
             'btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt',
-            'dogeusdt', 'adausdt', 'trxusdt', 'dotusdt'
+            'adausdt', 'avaxusdt', 'linkusdt'
         ]
         self.market_data = {s.upper(): {"high_24h": 0.0, "low_24h": 0.0, "change_24h_pct": 0.0} for s in self.symbols}
         # 1 hour window = 3600 samples (1 per second)

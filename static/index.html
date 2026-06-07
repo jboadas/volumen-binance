@@ -459,6 +459,7 @@
         }
         .reason-tp { background: #22543d; color: #68d391; }
         .reason-sl { background: #522224; color: #fc8181; }
+        .reason-trail { background: #234e52; color: #81e6d9; }
         .reason-manual { background: #2a4365; color: #90cdf4; }
     </style>
 </head>
@@ -695,8 +696,7 @@
 
                         const IMBALANCE_THRESHOLDS = {
                             BTCUSDT: 3, ETHUSDT: 3, SOLUSDT: 3, BNBUSDT: 3,
-                            XRPUSDT: 5, ADAUSDT: 5, DOTUSDT: 5,
-                            DOGEUSDT: 8, TRXUSDT: 8,
+                            XRPUSDT: 5, ADAUSDT: 5, AVAXUSDT: 5, LINKUSDT: 5,
                         };
                         const imbalanceOk = parseFloat(item.imbalance) >= (IMBALANCE_THRESHOLDS[item.symbol] || 5);
                         const dirOk = item.price_direction === "UP";
@@ -780,7 +780,7 @@
             <h2>Auto-Buy Conditions</h2>
             <table>
                 <tr><th>Condition</th><th>Detail</th></tr>
-                <tr><td>Imbalance ≥ 3-8x</td><td>Per symbol: BTC/ETH/SOL ≥3x, XRP/ADA/DOT ≥5x, DOGE/TRX ≥8x</td></tr>
+                <tr><td>Imbalance ≥ 3-5x</td><td>Per symbol: BTC/ETH/SOL/BNB ≥3x, XRP/ADA/AVAX/LINK ≥5x</td></tr>
                 <tr><td>Direction = UP</td><td>1-minute and 5-minute trends both rising</td></tr>
                 <tr><td>Bid rising</td><td>Mid price increased in the last second (micro-confirmation)</td></tr>
                 <tr><td>Volume spike ≥ 1.5x</td><td>Real trade volume > 1.5x the 5-minute average (from !ticker@arr)</td></tr>
