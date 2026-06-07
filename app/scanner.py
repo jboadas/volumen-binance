@@ -1,7 +1,6 @@
 import asyncio
 import json
 import redis
-import urllib.request
 import websockets
 import logging, os
 from collections import deque
@@ -29,42 +28,6 @@ class BinanceScanner:
         self.price_history = {s.upper(): deque(maxlen=3600) for s in self.symbols}
         self.last_tick_time = {s.upper(): 0 for s in self.symbols}
         self.prev_mid = {s.upper(): 0.0 for s in self.symbols}
-        self.last_ticker_v = {s.upper(): 0.0 for s in self.symbols}
-        self.volume_history = {s.upper(): deque(maxlen=300) for s in self.symbols}
-
-    async def _ticker_poller(self):
-        url = "https://api.binance.com/api/v3/ticker/24hr"
-        while True:
-            try:
-                loop = asyncio.get_event_loop()
-                resp = await loop.run_in_executor(None, lambda: urllib.request.urlopen(url, timeout=10))
-                data = json.loads(resp.read().decode())
-                for item in data:
-                    sym = item['symbol']
-                    if sym in self.market_data:
-                        cur_v = float(item['volume'])
-                        if self.last_ticker_v[sym] > 0:
-                            delta = cur_v - self.last_ticker_v[sym]
-                            if delta > 0:
-                                self.volume_history[sym].append(delta)
-                        self.last_ticker_v[sym] = cur_v
-
-                        hist = self.volume_history[sym]
-                        if len(hist) >= 6:
-                            avg = sum(hist) / len(hist)
-                            spike = hist[-1] / avg if avg > 0 else 1.0
-                        else:
-                            avg = 0.0
-                            spike = 1.0
-
-                        self.market_data[sym].update({
-                            "volume_spike": round(spike, 2),
-                            "avg_volume": round(avg, 4),
-                        })
-                self.r.set("market_status", json.dumps(list(self.market_data.values())))
-            except Exception as e:
-                log.error(f"[ERROR] TICKER: Poll failed. Retrying in 5s... ({e})")
-            await asyncio.sleep(5)
 
     async def _book_scanner(self):
         streams = "/".join([f"{s}@bookTicker" for s in self.symbols])
@@ -163,7 +126,7 @@ class BinanceScanner:
                 await asyncio.sleep(5)
 
     async def start_scanning(self):
-        await asyncio.gather(self._book_scanner(), self._ticker_poller())
+        await self._book_scanner()
 
 if __name__ == "__main__":
     scanner = BinanceScanner()
