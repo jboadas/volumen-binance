@@ -2,10 +2,22 @@ import json
 import redis
 import asyncio
 import time
+import logging, os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
+
+LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bot.log")
+
+log = logging.getLogger("bot")
+log.setLevel(logging.INFO)
+log.handlers.clear()
+log.propagate = False
+fmt = logging.Formatter("%(asctime)s | %(levelname)-5s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+fh = logging.FileHandler(LOGFILE, mode="w")
+fh.setFormatter(fmt)
+log.addHandler(fh)
 
 r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 lock = asyncio.Lock()
@@ -32,7 +44,7 @@ async def _scanner_watchdog():
             await asyncio.sleep(0.5)
             if _scanner_stop_event.is_set():
                 break
-            print("[WATCHDOG] Scanner down. Restarting in 2s...")
+            log.info("[WATCHDOG] Scanner down. Restarting in 2s...")
             await asyncio.sleep(2)
             if _scanner_stop_event.is_set():
                 break
@@ -40,9 +52,9 @@ async def _scanner_watchdog():
                 scanner_process = await asyncio.create_subprocess_exec(
                     "python3", "app/scanner.py"
                 )
-                print("[WATCHDOG] Scanner restarted.")
+                log.info("[WATCHDOG] Scanner restarted.")
             except Exception as e:
-                print(f"[WATCHDOG] Failed to restart scanner: {e}")
+                log.error(f"[WATCHDOG] Failed to restart scanner: {e}")
         try:
             await asyncio.wait_for(scanner_process.wait(), timeout=5)
         except asyncio.TimeoutError:
@@ -52,6 +64,14 @@ async def _scanner_watchdog():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global scanner_process
+
+    log.handlers.clear()
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    fh = logging.FileHandler(LOGFILE, mode="a")
+    fh.setFormatter(fmt)
+    log.addHandler(fh)
+    log.info("[INIT] Lifespan started, logger reconfigured.")
     _scanner_stop_event.clear()
     scanner_process = await asyncio.create_subprocess_exec(
         "python3", "app/scanner.py"
@@ -65,10 +85,10 @@ async def lifespan(app: FastAPI):
 
     if not r.exists("wallet"):
         r.set("wallet", json.dumps({"balance": 100.0, "pnl": 0.0}))
-        print("[INIT] Redis empty: Created new simulation wallet with $100.00.")
+        log.info("[INIT] Redis empty: Created new simulation wallet with $100.00.")
     else:
         wallet_actual = load_wallet()
-        print(f"[INIT] WALLET FOUND: Keeping progress. Available balance: ${wallet_actual['balance']:.2f}")
+        log.info(f"[INIT] WALLET FOUND: Keeping progress. Available balance: ${wallet_actual['balance']:.2f}")
 
     asyncio.create_task(monitoring_loop())
 
@@ -117,6 +137,43 @@ def compute_unrealized_net_pct(position, market_price):
     val_retorno, _ = compute_effective_sell_return(position['amount'], market_price)
     return ((val_retorno - cost) / cost) * 100
 
+def should_buy(data, cfg):
+    range_pct = float(data.get('range_pct', 100))
+    if range_pct > 70:
+        return False, f"range={range_pct:.0f}% > 70 (barranco)"
+
+    change_1h = float(data.get('change_1h_pct', 0))
+    if change_1h < -5.0:
+        return False, f"macro={change_1h:.1f}% < -5 (barranco)"
+
+    score = 0
+    parts = []
+
+    imbalance = float(data['imbalance'])
+    if imbalance >= cfg['imbalance']:
+        score += 2
+        parts.append(f"imbal({imbalance:.1f}x)+2")
+    else:
+        parts.append(f"imbal({imbalance:.1f}x)<{cfg['imbalance']}")
+
+    if data.get('price_direction') == 'UP':
+        score += 2
+        parts.append("dirUP+2")
+    else:
+        parts.append(f"dir={data.get('price_direction')}")
+
+    if data.get('bid_rising'):
+        score += 1
+        parts.append("bid↑+1")
+    else:
+        parts.append("bid↓")
+
+    ok = score >= 3
+    if ok:
+        return True, f"score={score}/5 ✓ ({', '.join(parts)})"
+    else:
+        return False, f"score={score}/5 ✗ ({', '.join(parts)})"
+
 async def monitoring_loop():
     while True:
         await asyncio.sleep(5)
@@ -131,7 +188,7 @@ async def monitoring_loop():
             # Filtro defensivo robusto contra nulos o arranques parciales
             market = {item['symbol']: item for item in market_data if isinstance(item, dict) and 'symbol' in item}
         except Exception as e:
-            print(f"[ERROR] Error processing market_status from Redis: {e}")
+            log.error(f"[ERROR] Error processing market_status from Redis: {e}")
             continue
 
         if not market:
@@ -210,34 +267,37 @@ async def monitoring_loop():
 
                     if reason == "SL":
                         r.setex(f"cooldown:{symbol}", 300, "blocked")
-                        print(f"[ALERT] SL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
+                        log.warning(f"[ALERT] SL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
                     else:
                         r.setex(f"cooldown:{symbol}", 60, "blocked")
-                        print(f"[LOG] {reason} on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
+                        log.info(f"[LOG] {reason} on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
-            # --- 2. PROCESAR COMPRAS CON CONFIRMACION DE REBOTE ---
+            # --- 2. PROCESAR COMPRAS POR SCORE ---
             for item in market.values():
                 symbol = item['symbol']
                 cfg = SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
-                imbalance = float(item['imbalance'])
-                price_direction = item.get('price_direction', 'NEUTRAL')
-                range_pct = float(item.get('range_pct', 50.0))
-                bid_rising = item.get('bid_rising', False)
-                low_1h = float(item.get('low_1h', 0.0))
-                volume_spike = float(item.get('volume_spike', 0.0))
 
                 wallet = load_wallet()
                 in_cooldown = r.exists(f"cooldown:{symbol}")
+                has_position = symbol in r.hkeys("open_positions")
 
-                if (imbalance >= cfg['imbalance'] and price_direction == "UP" and bid_rising
-                    and volume_spike >= 1.5
-                    and not in_cooldown
-                    and symbol not in r.hkeys("open_positions") and wallet['balance'] >= 10.0
-                    and range_pct <= 30
-                    and float(item.get('change_1h_pct', 0.0)) > -5):
+                if in_cooldown:
+                    log.info(f"[SKIP] {symbol} cooldown active")
+                    continue
+                if has_position:
+                    log.info(f"[SKIP] {symbol} already in position")
+                    continue
+                if wallet['balance'] < 10.0:
+                    log.info(f"[SKIP] {symbol} balance ${wallet['balance']:.2f} < $10")
+                    continue
+
+                ok, reason = should_buy(item, cfg)
+
+                if ok:
                     price = (float(item['bid']) + float(item['ask'])) / 2
                     invest = 10.0
                     qty, buy_price_effective = compute_effective_buy_amount(invest, price)
+                    low_1h = float(item.get('low_1h', 0.0))
 
                     sl_price = low_1h if low_1h > 0 else price * (1 - cfg['sl_pct'] / 100)
                     sl_price = min(sl_price, price * (1 - cfg['sl_pct'] / 100))
@@ -255,9 +315,9 @@ async def monitoring_loop():
                         "trailing_active": False,
                     }))
 
-                    print(f"[LOG] Confirmed Buy on {symbol} at {buy_price_effective:.4f}. "
-                          f"Range1h: {range_pct:.1f}% | Imbalance: {imbalance:.1f}x | "
-                          f"SL: {sl_price:.4f} | Balance: {wallet['balance']:.2f}")
+                    log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} ({reason})")
+                else:
+                    log.info(f"[SKIP] {symbol} {reason}")
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():

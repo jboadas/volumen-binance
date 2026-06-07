@@ -3,7 +3,19 @@ import json
 import redis
 import urllib.request
 import websockets
+import logging, os
 from collections import deque
+
+LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bot.log")
+
+log = logging.getLogger("bot")
+log.setLevel(logging.INFO)
+log.handlers.clear()
+log.propagate = False
+fmt = logging.Formatter("%(asctime)s | %(levelname)-5s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+fh = logging.FileHandler(LOGFILE, mode="a")
+fh.setFormatter(fmt)
+log.addHandler(fh)
 
 class BinanceScanner:
     def __init__(self):
@@ -51,18 +63,18 @@ class BinanceScanner:
                         })
                 self.r.set("market_status", json.dumps(list(self.market_data.values())))
             except Exception as e:
-                print(f"[ERROR] TICKER: Poll failed. Retrying in 5s... ({e})")
+                log.error(f"[ERROR] TICKER: Poll failed. Retrying in 5s... ({e})")
             await asyncio.sleep(5)
 
     async def _book_scanner(self):
         streams = "/".join([f"{s}@bookTicker" for s in self.symbols])
         url = f"wss://stream.binance.com:9443/ws/{streams}"
-        print("[INFO] SCANNER: Connecting to Binance bookTicker WebSocket...")
+        log.info("[INFO] SCANNER: Connecting to Binance bookTicker WebSocket...")
 
         while True:
             try:
                 async with websockets.connect(url) as websocket:
-                    print("[INFO] SCANNER: WebSocket connection established successfully.")
+                    log.info("[INFO] SCANNER: WebSocket connection established successfully.")
 
                     while True:
                         try:
@@ -110,8 +122,11 @@ class BinanceScanner:
                                 window = min(history_len, 3600)
                                 change_1h_pct = ((current_mid - history[-window]) / history[-window]) * 100
 
-                            bid_rising = current_mid > self.prev_mid[symbol] if self.prev_mid[symbol] > 0 else False
-                            self.prev_mid[symbol] = current_mid
+                            bid_rising = False
+                            if current_mid > self.prev_mid[symbol] and self.prev_mid[symbol] > 0:
+                                bid_rising = True
+                            if current_mid != self.prev_mid[symbol]:
+                                self.prev_mid[symbol] = current_mid
 
                             if trend_1m == "UP" and trend_5m == "UP":
                                 price_direction = "UP"
@@ -140,11 +155,11 @@ class BinanceScanner:
                         except (websockets.exceptions.ConnectionClosed, asyncio.exceptions.CancelledError):
                             break
                         except Exception as e:
-                            print(f"[ERROR] SCANNER: Stream data processing failed: {e}")
+                            log.error(f"[ERROR] SCANNER: Stream data processing failed: {e}")
                             await asyncio.sleep(1)
 
             except Exception as e:
-                print(f"[ERROR] SCANNER: WebSocket server disconnected. Retrying in 5s... ({e})")
+                log.error(f"[ERROR] SCANNER: WebSocket server disconnected. Retrying in 5s... ({e})")
                 await asyncio.sleep(5)
 
     async def start_scanning(self):
@@ -155,4 +170,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(scanner.start_scanning())
     except KeyboardInterrupt:
-        print("\n[INFO] SCANNER: Scanner stopped by user.")
+        log.info("\n[INFO] SCANNER: Scanner stopped by user.")
