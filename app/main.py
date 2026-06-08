@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
 LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bot.log")
+TRADESFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "trades.log")
 
 log = logging.getLogger("bot")
 log.setLevel(logging.INFO)
@@ -18,6 +19,14 @@ fmt = logging.Formatter("%(asctime)s | %(levelname)-5s | %(message)s", datefmt="
 fh = logging.FileHandler(LOGFILE, mode="w")
 fh.setFormatter(fmt)
 log.addHandler(fh)
+
+trades_log = logging.getLogger("trades")
+trades_log.setLevel(logging.INFO)
+trades_log.handlers.clear()
+trades_log.propagate = False
+tfh = logging.FileHandler(TRADESFILE, mode="w")
+tfh.setFormatter(fmt)
+trades_log.addHandler(tfh)
 
 r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 lock = asyncio.Lock()
@@ -65,12 +74,13 @@ async def _scanner_watchdog():
 async def lifespan(app: FastAPI):
     global scanner_process
 
-    log.handlers.clear()
-    log.setLevel(logging.INFO)
-    log.propagate = False
-    fh = logging.FileHandler(LOGFILE, mode="a")
-    fh.setFormatter(fmt)
-    log.addHandler(fh)
+    for lgr in (log, trades_log):
+        lgr.handlers.clear()
+        lgr.setLevel(logging.INFO)
+        lgr.propagate = False
+        fh2 = logging.FileHandler(LOGFILE if lgr is log else TRADESFILE, mode="a")
+        fh2.setFormatter(fmt)
+        lgr.addHandler(fh2)
     log.info("[INIT] Lifespan started, logger reconfigured.")
     _scanner_stop_event.clear()
     scanner_process = await asyncio.create_subprocess_exec(
@@ -250,9 +260,11 @@ async def monitoring_loop():
                     if reason == "SL":
                         r.setex(f"cooldown:{symbol}", 300, "blocked")
                         log.warning(f"[ALERT] SL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
+                        trades_log.warning(f"[ALERT] SL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
                     else:
                         r.setex(f"cooldown:{symbol}", 60, "blocked")
                         log.info(f"[LOG] {reason} on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
+                        trades_log.info(f"[LOG] {reason} on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
             # --- 2. PROCESAR COMPRAS (imbalance + rango + macro) ---
             for item in market.values():
@@ -298,6 +310,7 @@ async def monitoring_loop():
                     }))
 
                     log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} ({reason})")
+                    trades_log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} ({reason})")
                 else:
                     log.info(f"[SKIP] {symbol} {reason}")
 
