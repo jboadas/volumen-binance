@@ -2,7 +2,7 @@ import asyncio
 import json
 import redis
 import websockets
-import logging, os
+import logging, os, sys
 from collections import deque
 
 LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bot.log")
@@ -19,10 +19,7 @@ log.addHandler(fh)
 class BinanceScanner:
     def __init__(self):
         self.r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-        self.symbols = [
-            'btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt',
-            'adausdt', 'avaxusdt', 'linkusdt'
-        ]
+        self.symbols = [s.lower() for s in sys.argv[1:]]
         self.market_data = {s.upper(): {} for s in self.symbols}
         # 1 hour window = 3600 samples (1 per second)
         self.price_history = {s.upper(): deque(maxlen=3600) for s in self.symbols}
@@ -113,7 +110,8 @@ class BinanceScanner:
                                 "change_1h_pct": round(change_1h_pct, 2),
                             })
 
-                            self.r.set("market_status", json.dumps(list(self.market_data.values())))
+                            market_list = [v for v in self.market_data.values() if v]
+                            self.r.set("market_status", json.dumps(market_list))
 
                         except (websockets.exceptions.ConnectionClosed, asyncio.exceptions.CancelledError):
                             break

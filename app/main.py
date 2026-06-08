@@ -33,18 +33,29 @@ lock = asyncio.Lock()
 scanner_process = None
 _scanner_stop_event = asyncio.Event()
 
-SYMBOL_CONFIG = {
-    "BTCUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.8, "sl_pct": 1.5},
-    "ETHUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.8, "sl_pct": 1.5},
-    "SOLUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.8, "sl_pct": 1.5},
-    "BNBUSDT": {"imbalance": 3, "tp_pct": 1.2, "trail_pct": 0.8, "sl_pct": 1.5},
-    "XRPUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0},
-    "ADAUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0},
-    "AVAXUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0},
-    "LINKUSDT": {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0},
-}
+TOPFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "top_pairs.json")
 
-DEFAULT_CONFIG = {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0}
+CONFIG = {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0}
+
+def load_traded_symbols():
+    try:
+        with open(TOPFILE) as f:
+            data = json.load(f)
+        symbols = [p['symbol'] for p in data]
+        if symbols:
+            return symbols[:16]
+    except FileNotFoundError:
+        log.error("[INIT] top_pairs.json not found. Run market_screener.py first.")
+    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        log.error(f"[INIT] Failed to parse top_pairs.json: {e}")
+    return []
+
+def get_config(symbol):
+    return dict(CONFIG)
+
+TRADED_SYMBOLS = load_traded_symbols()
+
+TRADED_SYMBOLS = load_traded_symbols()
 
 async def _scanner_watchdog():
     global scanner_process
@@ -59,7 +70,7 @@ async def _scanner_watchdog():
                 break
             try:
                 scanner_process = await asyncio.create_subprocess_exec(
-                    "python3", "app/scanner.py"
+                    "python3", "app/scanner.py", *TRADED_SYMBOLS
                 )
                 log.info("[WATCHDOG] Scanner restarted.")
             except Exception as e:
@@ -82,9 +93,10 @@ async def lifespan(app: FastAPI):
         fh2.setFormatter(fmt)
         lgr.addHandler(fh2)
     log.info("[INIT] Lifespan started, logger reconfigured.")
+    log.info(f"[INIT] Trading {len(TRADED_SYMBOLS)} symbols: {', '.join(TRADED_SYMBOLS)}")
     _scanner_stop_event.clear()
     scanner_process = await asyncio.create_subprocess_exec(
-        "python3", "app/scanner.py"
+        "python3", "app/scanner.py", *TRADED_SYMBOLS
     )
     asyncio.create_task(_scanner_watchdog())
 
@@ -190,7 +202,7 @@ async def monitoring_loop():
                     continue
                 m = market[symbol]
                 cur_price = (float(m['bid']) + float(m['ask'])) / 2
-                cfg = SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
+                cfg = get_config(symbol)
 
                 stop_loss_price = float(pos.get("stop_loss_price", float(pos.get("buy_price", 0)) * 0.995))
                 high_water_mark = float(pos.get("high_water_mark", float(pos.get("buy_price", 0))))
@@ -267,9 +279,12 @@ async def monitoring_loop():
                         trades_log.info(f"[LOG] {reason} on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
             # --- 2. PROCESAR COMPRAS (imbalance + rango + macro) ---
+            if r.get("trading_locked"):
+                continue
+
             for item in market.values():
                 symbol = item['symbol']
-                cfg = SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
+                cfg = get_config(symbol)
 
                 wallet = load_wallet()
                 in_cooldown = r.exists(f"cooldown:{symbol}")
@@ -325,7 +340,8 @@ async def get_status():
     wallet = load_wallet()
     return {
         "market": json.loads(m) if m else [],
-        "wallet": wallet
+        "wallet": wallet,
+        "trading_locked": bool(r.get("trading_locked"))
     }
 
 @app.get("/api/positions")
@@ -380,7 +396,7 @@ async def simulate_buy(request: Request):
                     low_1h = float(item.get('low_1h', 0.0))
                     break
 
-        cfg = SYMBOL_CONFIG.get(symbol, DEFAULT_CONFIG)
+        cfg = get_config
         sl_price = low_1h if low_1h > 0 else market_price * (1 - cfg['sl_pct'] / 100)
         sl_price = min(sl_price, market_price * (1 - cfg['sl_pct'] / 100))
 
@@ -433,6 +449,21 @@ async def simulate_sell(request: Request):
         }))
         r.ltrim("trade_history", 0, 199)
         return {"status": "ok"}
+
+@app.get("/api/trading/lock")
+async def get_lock():
+    return {"locked": bool(r.get("trading_locked"))}
+
+@app.post("/api/trading/lock")
+async def toggle_lock():
+    v = r.get("trading_locked")
+    if v:
+        r.delete("trading_locked")
+        log.info("[LOCK] Trading unlocked — new buys allowed")
+    else:
+        r.set("trading_locked", "1")
+        log.warning("[LOCK] Trading locked — new buys blocked")
+    return {"locked": bool(r.get("trading_locked"))}
 
 @app.post("/api/wallet/reset")
 async def reset_wallet():

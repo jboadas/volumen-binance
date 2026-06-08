@@ -336,6 +336,33 @@
             background-color: #718096;
         }
 
+        .btn-lock {
+            background: none;
+            border: 1px solid #4a5568;
+            width: 28px;
+            height: 26px;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+            margin-left: 8px;
+            flex-shrink: 0;
+            line-height: 1;
+        }
+
+        .btn-lock:hover {
+            border-color: #718096;
+            background: #2d3748;
+        }
+
+        .btn-lock.locked {
+            border-color: #e53e3e;
+            background: rgba(229, 62, 62, 0.15);
+        }
+
         .btn-help {
             background: none;
             border: 1px solid #4a5568;
@@ -479,6 +506,7 @@
                     <span class="metric-label">PNL</span>
                     <span id="wallet-pnl" class="metric-value value-neutral">0.00%</span>
                 </div>
+                <button class="btn-lock" id="btn-lock" onclick="toggleLock()" title="Lock / unlock buys">🔓</button>
                 <button class="btn-reset" onclick="resetWallet()">Reset</button>
                 <button class="btn-help" onclick="toggleHelp()" title="Buy conditions">?</button>
             </div>
@@ -589,6 +617,29 @@
             }
         }
 
+        async function toggleLock() {
+            try {
+                const res = await fetch('/api/trading/lock', { method: 'POST' });
+                const data = await res.json();
+                updateLockBtn(data.locked);
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function updateLockBtn(locked) {
+            const btn = document.getElementById('btn-lock');
+            if (locked) {
+                btn.textContent = '🔒';
+                btn.classList.add('locked');
+                btn.title = 'Trading locked — new buys blocked';
+            } else {
+                btn.textContent = '🔓';
+                btn.classList.remove('locked');
+                btn.title = 'Trading unlocked — new buys allowed';
+            }
+        }
+
         async function resetWallet() {
             if (!confirm("Reset wallet to $100? This will NOT close open positions.")) return;
             try {
@@ -665,6 +716,8 @@
                 const response = await fetch('/api/status');
                 const data = await response.json();
 
+                updateLockBtn(data.trading_locked);
+
                 const wallet = data.wallet || { balance: 0.0, pnl: 0.0 };
                 document.getElementById('wallet-balance').innerText = `$${parseFloat(wallet.balance).toFixed(2)}`;
 
@@ -683,7 +736,7 @@
                 const marketTbody = document.getElementById('market-tbody');
                 if (data.market && data.market.length > 0) {
                     let marketHtml = '';
-                    const sortedMarket = data.market.sort((a, b) => a.symbol.localeCompare(b.symbol));
+                    const sortedMarket = data.market.filter(item => item && item.symbol).sort((a, b) => a.symbol.localeCompare(b.symbol));
 
                     sortedMarket.forEach(item => {
                         const midPrice = (parseFloat(item.bid) + parseFloat(item.ask)) / 2;
