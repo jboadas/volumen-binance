@@ -867,7 +867,10 @@
         <div class="modal-box chart-box">
             <div class="chart-header">
                 <h2 id="chart-title">BTCUSDT</h2>
-                <button class="modal-close" onclick="closeChart()">Close</button>
+                <div style="display:flex;gap:6px;">
+                    <button id="btn-enlarge" class="modal-close" onclick="toggleChartSize()" title="Enlarge chart" style="font-size:14px;">⛶</button>
+                    <button class="modal-close" onclick="closeChart()">Close</button>
+                </div>
             </div>
             <div id="chart-container"></div>
         </div>
@@ -879,6 +882,27 @@
         }
 
         let chartInstance = null;
+        let chartEnlarged = false;
+
+        function toggleChartSize() {
+            chartEnlarged = !chartEnlarged;
+            const modal = document.querySelector('.chart-box');
+            const container = document.getElementById('chart-container');
+            const btn = document.getElementById('btn-enlarge');
+            if (chartEnlarged) {
+                modal.style.maxWidth = '95vw';
+                modal.style.width = '95vw';
+                container.style.height = '75vh';
+            } else {
+                modal.style.maxWidth = '';
+                modal.style.width = '';
+                container.style.height = '320px';
+            }
+            btn.title = chartEnlarged ? 'Shrink chart' : 'Enlarge chart';
+            if (chartInstance) {
+                setTimeout(() => chartInstance.resize(container.clientWidth, chartEnlarged ? window.innerHeight * 0.75 : 320), 50);
+            }
+        }
 
         async function openChart(symbol) {
             const container = document.getElementById('chart-container');
@@ -958,6 +982,22 @@
                         size: 1,
                     }));
                     LightweightCharts.createSeriesMarkers(candleSeries, lcMarkers);
+                }
+
+                if (data.trendlines && data.trendlines.length > 0) {
+                    data.trendlines.forEach(tl => {
+                        const lineSeries = chartInstance.addSeries(LightweightCharts.LineSeries, {
+                            color: tl.type === 'uptrend' ? '#48bb78' : '#e53e3e',
+                            lineWidth: 1,
+                            lineStyle: LightweightCharts.LineStyle.Dashed,
+                            lastValueVisible: false,
+                            priceLineVisible: false,
+                        });
+                        lineSeries.setData([
+                            { time: tl.start_time, value: tl.start_price },
+                            { time: tl.end_time, value: tl.end_price },
+                        ]);
+                    });
                 }
 
                 const levels = data.levels || { supports: [], resistances: [] };
