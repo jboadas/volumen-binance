@@ -548,7 +548,7 @@ async def get_klines(symbol: str):
     if cached:
         entry = json.loads(cached)
         if now - entry.get("ts", 0) < 300:
-            return {"symbol": symbol, "klines": entry["klines"]}
+            return {"symbol": symbol, "klines": entry["klines"], "levels": calc_sr_levels(entry["klines"])}
 
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=96"
     try:
@@ -566,9 +566,44 @@ async def get_klines(symbol: str):
                 "v": float(k[5]),
             })
         r.hset("klines_data", f"{symbol}:{interval}", json.dumps({"ts": now, "klines": klines}))
-        return {"symbol": symbol, "klines": klines}
+        return {"symbol": symbol, "klines": klines, "levels": calc_sr_levels(klines)}
     except Exception as e:
-        return {"symbol": symbol, "error": str(e), "klines": []}
+        return {"symbol": symbol, "error": str(e), "klines": [], "levels": []}
+
+def calc_sr_levels(klines):
+    if len(klines) < 10:
+        return []
+    pivots = []
+    for i in range(2, len(klines) - 2):
+        if all(klines[i]["h"] > klines[i + j]["h"] for j in (-2, -1, 1, 2)):
+            pivots.append({"price": klines[i]["h"], "type": "R"})
+        if all(klines[i]["l"] < klines[i + j]["l"] for j in (-2, -1, 1, 2)):
+            pivots.append({"price": klines[i]["l"], "type": "S"})
+
+    if len(pivots) < 2:
+        return []
+
+    pivots.sort(key=lambda x: x["price"])
+    tol = max(k["h"] for k in klines) * 0.002
+    clusters = []
+    for p in pivots:
+        merged = False
+        for c in clusters:
+            if abs(c["price"] - p["price"]) / c["price"] < 0.002:
+                c["price"] = (c["price"] * c["count"] + p["price"]) / (c["count"] + 1)
+                c["count"] += 1
+                if p["type"] == "R":
+                    c["type"] = "R"
+                merged = True
+                break
+        if not merged:
+            clusters.append({"price": p["price"], "type": p["type"], "count": 1})
+
+    clusters.sort(key=lambda x: x["count"], reverse=True)
+    current = klines[-1]["c"]
+    supports = sorted([c for c in clusters if c["price"] < current and c["count"] >= 1], key=lambda x: x["price"], reverse=True)[:3]
+    resistances = sorted([c for c in clusters if c["price"] > current], key=lambda x: x["price"])[:3]
+    return {"supports": [round(s["price"], 2) for s in supports], "resistances": [round(r["price"], 2) for r in resistances]}
 
 @app.post("/api/screener/run")
 async def manual_rescan():

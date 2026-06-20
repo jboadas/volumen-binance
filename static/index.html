@@ -530,7 +530,7 @@
                     <span id="wallet-pnl" class="metric-value value-neutral">0.00%</span>
                 </div>
                 <button class="btn-lock" id="btn-lock" onclick="toggleLock()" title="Lock / unlock buys">🔓</button>
-                <button class="btn-reset" onclick="resetWallet()">Reset</button>
+                <button class="btn-reset" onclick="resetWallet()" title="Reset wallet to $100 (keeps open positions)">Reset</button>
                 <button class="btn-help" onclick="toggleHelp()" title="Buy conditions">?</button>
             </div>
         </header>
@@ -947,6 +947,28 @@
 
                 candleSeries.setData(candles);
                 chartInstance.timeScale().fitContent();
+
+                const levels = data.levels || { supports: [], resistances: [] };
+                levels.supports.forEach(price => {
+                    candleSeries.createPriceLine({
+                        price: price,
+                        color: '#48bb78',
+                        lineWidth: 1,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: 'S',
+                    });
+                });
+                levels.resistances.forEach(price => {
+                    candleSeries.createPriceLine({
+                        price: price,
+                        color: '#e53e3e',
+                        lineWidth: 1,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: 'R',
+                    });
+                });
             } catch (err) {
                 container.innerHTML = '<p style="color:#e53e3e;padding:20px;">Error loading chart: ' + err.message + '</p>';
                 console.error('Chart error:', err);
