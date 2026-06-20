@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MicroScanner Crypto Bot</title>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -488,6 +489,28 @@
         .reason-sl { background: #522224; color: #fc8181; }
         .reason-trail { background: #234e52; color: #81e6d9; }
         .reason-manual { background: #2a4365; color: #90cdf4; }
+
+        .chart-box {
+            max-width: 680px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .chart-header h2 {
+            margin: 0;
+            font-size: 16px;
+            color: #f7fafc;
+        }
+
+        #chart-container {
+            width: 100%;
+            height: 320px;
+        }
     </style>
 </head>
 
@@ -688,7 +711,7 @@
 
                         positionsHtml += `
                             <tr class="${rowClass}">
-                                <td style="font-weight: 600; color: #fff;"><a class="tv-link" href="https://www.tradingview.com/chart/?symbol=BINANCE%3A${symbol}" target="_blank" rel="noopener">${symbol}</a> ${riskBadge}</td>
+                                <td style="font-weight: 600; color: #fff;"><a class="tv-link" href="javascript:void(0)" onclick="openChart('${symbol}')">${symbol}</a> ${riskBadge}</td>
                                 <td>${entryPrice.toFixed(4)}</td>
                                 <td>${currentPrice > 0 ? currentPrice.toFixed(4) : '...'}</td>
                                 <td>${amount.toFixed(5)}</td>
@@ -759,7 +782,7 @@
 
                         marketHtml += `
                             <tr style="${rowStyle}">
-                                <td><a class="tv-link market-badge" href="https://www.tradingview.com/chart/?symbol=BINANCE%3A${item.symbol}" target="_blank" rel="noopener">${item.symbol}</a></td>
+                                <td><a class="tv-link market-badge" href="javascript:void(0)" onclick="openChart('${item.symbol}')">${item.symbol}</a></td>
                                 <td style="font-weight: 500; color: ${imbalanceOk ? '#f56565' : '#cbd5e0'}">
                                     ${parseFloat(item.imbalance).toFixed(1)}x
                                 </td>
@@ -840,9 +863,98 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="chart-modal" onclick="if(event.target===this) closeChart()">
+        <div class="modal-box chart-box">
+            <div class="chart-header">
+                <h2 id="chart-title">BTCUSDT</h2>
+                <button class="modal-close" onclick="closeChart()">Close</button>
+            </div>
+            <div id="chart-container"></div>
+        </div>
+    </div>
+
     <script>
         function toggleHelp() {
             document.getElementById('help-modal').classList.toggle('active');
+        }
+
+        let chartInstance = null;
+
+        async function openChart(symbol) {
+            const container = document.getElementById('chart-container');
+            container.innerHTML = '';
+            container.style.height = '320px';
+
+            document.getElementById('chart-title').textContent = symbol;
+            document.getElementById('chart-modal').classList.add('active');
+
+            if (chartInstance) {
+                try { chartInstance.remove(); } catch (_) {}
+                chartInstance = null;
+            }
+
+            if (typeof LightweightCharts === 'undefined') {
+                container.innerHTML = '<p style="color:#e53e3e;padding:20px;">Error: LightweightCharts library not loaded (CDN blocked?)</p>';
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/klines/${symbol}`);
+                const data = await res.json();
+
+                if (!data.klines || data.klines.length === 0) {
+                    container.innerHTML = '<p style="color:#718096;padding:20px;">No data available' + (data.error ? ': ' + data.error : '') + '</p>';
+                    return;
+                }
+
+                chartInstance = LightweightCharts.createChart(container, {
+                    layout: {
+                        background: { color: '#1a202c' },
+                        textColor: '#a0aec0',
+                    },
+                    grid: {
+                        vertLines: { color: '#2d3748' },
+                        horzLines: { color: '#2d3748' },
+                    },
+                    crosshair: {
+                        mode: 0,
+                    },
+                    timeScale: {
+                        borderColor: '#4a5568',
+                        timeVisible: true,
+                    },
+                    rightPriceScale: {
+                        borderColor: '#4a5568',
+                    },
+                });
+
+                const candleSeries = chartInstance.addSeries(LightweightCharts.CandlestickSeries, {
+                    upColor: '#48bb78',
+                    downColor: '#e53e3e',
+                    borderDownColor: '#e53e3e',
+                    borderUpColor: '#48bb78',
+                    wickDownColor: '#e53e3e',
+                    wickUpColor: '#48bb78',
+                });
+
+                const candles = data.klines.map(k => ({
+                    time: Math.floor(k.t / 1000),
+                    open: k.o,
+                    high: k.h,
+                    low: k.l,
+                    close: k.c,
+                }));
+
+                candleSeries.setData(candles);
+                chartInstance.timeScale().fitContent();
+            } catch (err) {
+                container.innerHTML = '<p style="color:#e53e3e;padding:20px;">Error loading chart: ' + err.message + '</p>';
+                console.error('Chart error:', err);
+            }
+        }
+
+        function closeChart() {
+            document.getElementById('chart-modal').classList.remove('active');
         }
     </script>
 </body>

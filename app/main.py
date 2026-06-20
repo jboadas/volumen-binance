@@ -3,6 +3,7 @@ import redis
 import asyncio
 import time
 import logging, os
+import urllib.request
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -45,15 +46,40 @@ def load_traded_symbols():
         if symbols:
             return symbols[:16]
     except FileNotFoundError:
-        log.error("[INIT] top_pairs.json not found. Run market_screener.py first.")
+        log.info("[INIT] top_pairs.json not found.")
     except (json.JSONDecodeError, KeyError, IndexError) as e:
         log.error(f"[INIT] Failed to parse top_pairs.json: {e}")
     return []
 
+async def run_screener():
+    url = "https://api.binance.com/api/v3/ticker/24hr"
+    try:
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: urllib.request.urlopen(url).read())
+        tickers = json.loads(response.decode('utf-8'))
+        usdt_pairs = [t for t in tickers if t['symbol'].endswith('USDT')]
+        scored = []
+        for t in usdt_pairs:
+            try:
+                volume = float(t['quoteVolume'])
+                high = float(t['highPrice'])
+                low = float(t['lowPrice'])
+                amplitude = ((high - low) / low) * 100 if low > 0 else 0
+                scored.append({"symbol": t['symbol'], "volume": round(volume, 2), "amplitude": round(amplitude, 2), "score": round(volume * amplitude, 2)})
+            except (ValueError, KeyError):
+                continue
+        scored.sort(key=lambda x: x['score'], reverse=True)
+        top10 = scored[:10]
+        with open(TOPFILE, "w") as f:
+            json.dump(top10, f, indent=2)
+        log.info("[SCREEN] Top 10 pairs written to top_pairs.json")
+        for p in top10:
+            log.info(f"[SCREEN] {p['symbol']}: vol=${p['volume']/1_000_000:.1f}M, amp={p['amplitude']}%, score={p['score']:.0f}")
+    except Exception as e:
+        log.error(f"[SCREEN] Error: {e}")
+
 def get_config(symbol):
     return dict(CONFIG)
-
-TRADED_SYMBOLS = load_traded_symbols()
 
 TRADED_SYMBOLS = load_traded_symbols()
 
@@ -80,6 +106,40 @@ async def _scanner_watchdog():
         except asyncio.TimeoutError:
             continue
 
+async def _restart_scanner(new_symbols):
+    global scanner_process, TRADED_SYMBOLS
+    log.info("[SCREEN] New symbols detected, rotating scanner...")
+    r.set("trading_locked", "1")
+    log.info("[SCREEN] Trading locked.")
+
+    while r.hlen("open_positions") > 0:
+        log.info(f"[SCREEN] Waiting for {r.hlen('open_positions')} position(s) to close...")
+        await asyncio.sleep(5)
+
+    if scanner_process and scanner_process.returncode is None:
+        scanner_process.terminate()
+        try:
+            await asyncio.wait_for(scanner_process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            scanner_process.kill()
+            await scanner_process.wait()
+
+    TRADED_SYMBOLS = new_symbols
+    scanner_process = await asyncio.create_subprocess_exec(
+        "python3", "app/scanner.py", *TRADED_SYMBOLS
+    )
+    log.info(f"[SCREEN] Scanner restarted with {len(TRADED_SYMBOLS)} symbols: {', '.join(TRADED_SYMBOLS)}")
+    r.delete("trading_locked")
+    log.info("[SCREEN] Trading unlocked.")
+
+async def _periodic_screener():
+    while True:
+        await asyncio.sleep(21600)  # 6 hours
+        await run_screener()
+        new_symbols = load_traded_symbols()
+        if new_symbols and new_symbols != TRADED_SYMBOLS:
+            await _restart_scanner(new_symbols)
+
 # --- MANEJO DE LIFESPAN (Arranque y Apagado Moderno de la Aplicacion) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -93,6 +153,13 @@ async def lifespan(app: FastAPI):
         fh2.setFormatter(fmt)
         lgr.addHandler(fh2)
     log.info("[INIT] Lifespan started, logger reconfigured.")
+
+    global TRADED_SYMBOLS
+    if not TRADED_SYMBOLS:
+        log.info("[INIT] No symbols found, running market screener...")
+        await run_screener()
+        TRADED_SYMBOLS = load_traded_symbols()
+
     log.info(f"[INIT] Trading {len(TRADED_SYMBOLS)} symbols: {', '.join(TRADED_SYMBOLS)}")
     _scanner_stop_event.clear()
     scanner_process = await asyncio.create_subprocess_exec(
@@ -113,6 +180,7 @@ async def lifespan(app: FastAPI):
         log.info(f"[INIT] WALLET FOUND: Keeping progress. Available balance: ${wallet_actual['balance']:.2f}")
 
     asyncio.create_task(monitoring_loop())
+    asyncio.create_task(_periodic_screener())
 
     yield
 
@@ -470,6 +538,48 @@ async def reset_wallet():
     async with lock:
         r.set("wallet", json.dumps({"balance": 100.0, "pnl": 0.0}))
     return {"status": "ok"}
+
+@app.get("/api/klines/{symbol}")
+async def get_klines(symbol: str):
+    symbol = symbol.upper()
+    interval = "5m"
+    now = time.time()
+    cached = r.hget("klines_data", f"{symbol}:{interval}")
+    if cached:
+        entry = json.loads(cached)
+        if now - entry.get("ts", 0) < 300:
+            return {"symbol": symbol, "klines": entry["klines"]}
+
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=96"
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(None, lambda: urllib.request.urlopen(url, timeout=10).read())
+        data = json.loads(raw)
+        klines = []
+        for k in data:
+            klines.append({
+                "t": k[0],
+                "o": float(k[1]),
+                "h": float(k[2]),
+                "l": float(k[3]),
+                "c": float(k[4]),
+                "v": float(k[5]),
+            })
+        r.hset("klines_data", f"{symbol}:{interval}", json.dumps({"ts": now, "klines": klines}))
+        return {"symbol": symbol, "klines": klines}
+    except Exception as e:
+        return {"symbol": symbol, "error": str(e), "klines": []}
+
+@app.post("/api/screener/run")
+async def manual_rescan():
+    asyncio.create_task(_rescan_and_rotate())
+    return {"status": "ok", "msg": "Screener started, rotation will happen when positions close"}
+
+async def _rescan_and_rotate():
+    await run_screener()
+    new_symbols = load_traded_symbols()
+    if new_symbols and new_symbols != TRADED_SYMBOLS:
+        await _restart_scanner(new_symbols)
 
 @app.get("/api/trades")
 async def get_trades():

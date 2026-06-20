@@ -13,3 +13,4 @@ __pycache__/
 *.rdb
 *.log
 .DS_Store
+top_pairs.json
