@@ -569,7 +569,7 @@
                                 <th title="Ratio of bid liquidity to ask liquidity. >= 5x = strong buying pressure">Imbalance</th>
                                 <th title="Short-term trend direction: UP (1m+5m rising), DOWN (1m+5m falling), NEUTRAL">Dir</th>
                                 <th title="Trend alignment: ✓✓ = strong, ✓✗ = possible reversal">Trend</th>
-                                <th title="Current price position within the 1h range. 0% = 1h low, 100% = 1h high. Buy only when <= 30%">Range</th>
+                                <th title="Current price position within the 1h range. 0% = 1h low, 100% = 1h high. Buy only when <= 50%">Range</th>
                                 <th title="1-hour price change percent. Positive = bullish short-term trend, negative = bearish. Buy only when > -5%">Macro</th>
                                 <th title="Buy (all conditions met), Near (partial), Wait (not ready) or Held (already in position)">Action</th>
                             </tr>
@@ -853,7 +853,7 @@
             <table>
                 <tr><th>Condition</th><th>Detail</th></tr>
                 <tr><td>Imbalance ≥ threshold</td><td>Bid quantity must exceed ask quantity by threshold. BTC/ETH/SOL/BNB ≥3x, XRP/ADA/AVAX/LINK ≥5x</td></tr>
-                <tr><td>Range &lt; 90%</td><td>Price below 90% of the 1h range. Avoids buying at the very top</td></tr>
+                <tr><td>Range &lt; 50%</td><td>Price below 50% of the 1h range. Avoids buying overextended</td></tr>
                 <tr><td>1h change &gt; -8%</td><td>Price hasn't dropped more than 8% in the last hour. Filters sharp dumps</td></tr>
                 <tr><td>No cooldown</td><td>300s after stop loss, 60s after take profit</td></tr>
                 <tr><td>No position</td><td>No open position for this symbol</td></tr>
@@ -947,6 +947,18 @@
 
                 candleSeries.setData(candles);
                 chartInstance.timeScale().fitContent();
+
+                if (data.markers && data.markers.length > 0) {
+                    const lcMarkers = data.markers.map(m => ({
+                        time: m.time,
+                        position: m.type === 'buy' ? 'belowBar' : 'aboveBar',
+                        color: m.type === 'buy' ? '#48bb78' : '#e53e3e',
+                        shape: m.type === 'buy' ? 'arrowUp' : 'arrowDown',
+                        text: m.type === 'buy' ? 'B' : ('S ' + (m.reason || '')),
+                        size: 1,
+                    }));
+                    LightweightCharts.createSeriesMarkers(candleSeries, lcMarkers);
+                }
 
                 const levels = data.levels || { supports: [], resistances: [] };
                 levels.supports.forEach(price => {

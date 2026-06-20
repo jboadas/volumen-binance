@@ -36,7 +36,7 @@ _scanner_stop_event = asyncio.Event()
 
 TOPFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "top_pairs.json")
 
-CONFIG = {"imbalance": 5, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0}
+CONFIG = {"imbalance": 20, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0}
 
 def load_traded_symbols():
     try:
@@ -233,8 +233,8 @@ def should_buy(data, cfg):
         return False, f"imbalance {imbalance:.1f}x < {cfg['imbalance']}x"
 
     range_pct = float(data.get('range_pct', 100))
-    if range_pct > 90:
-        return False, f"range {range_pct:.0f}% > 90%"
+    if range_pct > 50:
+        return False, f"range {range_pct:.0f}% > 50%"
 
     change_1h = float(data.get('change_1h_pct', 0))
     if change_1h < -8.0:
@@ -326,6 +326,7 @@ async def monitoring_loop():
                     trade = {
                         "symbol": symbol,
                         "entry": float(pos.get('buy_price', 0)),
+                        "buy_ts": float(pos.get('buy_ts', 0)),
                         "exit": cur_price,
                         "qty": amount,
                         "cost": cost,
@@ -384,6 +385,7 @@ async def monitoring_loop():
 
                     r.hset("open_positions", symbol, json.dumps({
                         "buy_price": price,
+                        "buy_ts": time.time(),
                         "entry_price_effective": buy_price_effective,
                         "amount": qty,
                         "cost": invest,
@@ -470,6 +472,7 @@ async def simulate_buy(request: Request):
 
         r.hset("open_positions", symbol, json.dumps({
             "buy_price": market_price,
+            "buy_ts": time.time(),
             "entry_price_effective": buy_price_effective,
             "amount": qty,
             "cost": 10.0,
@@ -539,6 +542,25 @@ async def reset_wallet():
         r.set("wallet", json.dumps({"balance": 100.0, "pnl": 0.0}))
     return {"status": "ok"}
 
+def get_trade_markers(symbol):
+    markers = []
+    raw_trades = r.lrange("trade_history", 0, -1)
+    for t_raw in raw_trades:
+        t = json.loads(t_raw)
+        if t['symbol'] != symbol:
+            continue
+        buy_ts = t.get('buy_ts', 0)
+        if buy_ts:
+            markers.append({"time": int(buy_ts), "type": "buy", "price": float(t['entry']), "pnl": t['pnl_pct']})
+        markers.append({"time": int(t['ts']), "type": "sell", "price": float(t['exit']), "pnl": t['pnl_pct'], "reason": t['reason']})
+    raw_pos = r.hget("open_positions", symbol)
+    if raw_pos:
+        pos = json.loads(raw_pos)
+        if pos.get('buy_ts'):
+            markers.append({"time": int(pos['buy_ts']), "type": "buy", "price": float(pos.get('buy_price', 0)), "pnl": None})
+    markers.sort(key=lambda m: m['time'])
+    return markers
+
 @app.get("/api/klines/{symbol}")
 async def get_klines(symbol: str):
     symbol = symbol.upper()
@@ -548,7 +570,7 @@ async def get_klines(symbol: str):
     if cached:
         entry = json.loads(cached)
         if now - entry.get("ts", 0) < 300:
-            return {"symbol": symbol, "klines": entry["klines"], "levels": calc_sr_levels(entry["klines"])}
+            return {"symbol": symbol, "klines": entry["klines"], "levels": calc_sr_levels(entry["klines"]), "markers": get_trade_markers(symbol)}
 
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=96"
     try:
@@ -566,9 +588,11 @@ async def get_klines(symbol: str):
                 "v": float(k[5]),
             })
         r.hset("klines_data", f"{symbol}:{interval}", json.dumps({"ts": now, "klines": klines}))
-        return {"symbol": symbol, "klines": klines, "levels": calc_sr_levels(klines)}
+        levels = calc_sr_levels(klines)
+        markers = get_trade_markers(symbol)
+        return {"symbol": symbol, "klines": klines, "levels": levels, "markers": markers}
     except Exception as e:
-        return {"symbol": symbol, "error": str(e), "klines": [], "levels": []}
+        return {"symbol": symbol, "error": str(e), "klines": [], "levels": [], "markers": []}
 
 def calc_sr_levels(klines):
     if len(klines) < 10:
