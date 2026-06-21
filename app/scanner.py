@@ -5,6 +5,8 @@ import websockets
 import logging, os, sys
 from collections import deque
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bot.log")
 
 log = logging.getLogger("bot")
@@ -16,25 +18,65 @@ fh = logging.FileHandler(LOGFILE, mode="a")
 fh.setFormatter(fmt)
 log.addHandler(fh)
 
-class BinanceScanner:
-    def __init__(self):
+EXCHANGES_CFG = {}
+cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "exchanges.json")
+try:
+    with open(cfg_path) as f:
+        EXCHANGES_CFG = json.load(f)
+except FileNotFoundError:
+    log.error(f"[INIT] exchanges.json not found at {cfg_path}")
+    sys.exit(1)
+
+
+def _murphy_trend(history, window, n_segments=3):
+    if len(history) < window or window < n_segments * 2:
+        return "NEUTRAL"
+    seg_size = window // n_segments
+    recent = history[-window:]
+    seg_highs = []
+    seg_lows = []
+    for i in range(n_segments):
+        start = i * seg_size
+        seg = recent[start:start + seg_size]
+        seg_highs.append(max(seg))
+        seg_lows.append(min(seg))
+    highs_up = all(seg_highs[i] < seg_highs[i + 1] for i in range(n_segments - 1))
+    lows_up = all(seg_lows[i] < seg_lows[i + 1] for i in range(n_segments - 1))
+    highs_down = all(seg_highs[i] > seg_highs[i + 1] for i in range(n_segments - 1))
+    lows_down = all(seg_lows[i] > seg_lows[i + 1] for i in range(n_segments - 1))
+    if highs_up and lows_up:
+        return "UP"
+    if highs_down and lows_down:
+        return "DOWN"
+    return "NEUTRAL"
+
+
+class MarketScanner:
+    def __init__(self, exchange_id, symbols):
+        self.exchange_id = exchange_id
+        self.cfg = EXCHANGES_CFG.get(exchange_id, {})
+        ws_cfg = self.cfg.get("ws", {})
+        self.symbols = symbols
         self.r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-        self.symbols = [s.lower() for s in sys.argv[1:]]
-        self.market_data = {s.upper(): {} for s in self.symbols}
-        # 1 hour window = 3600 samples (1 per second)
-        self.price_history = {s.upper(): deque(maxlen=3600) for s in self.symbols}
-        self.last_tick_time = {s.upper(): 0 for s in self.symbols}
-        self.prev_mid = {s.upper(): 0.0 for s in self.symbols}
+        self.market_data = {s.upper(): {} for s in symbols}
+        self.price_history = {s.upper(): deque(maxlen=3600) for s in symbols}
+        self.last_tick_time = {s.upper(): 0 for s in symbols}
+        self.prev_mid = {s.upper(): 0.0 for s in symbols}
+
+        suffix = ws_cfg.get("book_ticker_suffix", "@bookTicker")
+        base = ws_cfg.get("base_url", "wss://stream.binance.com:9443/ws")
+        case = ws_cfg.get("symbol_case", "lower")
+        ss = [s.lower() if case == "lower" else s for s in symbols]
+        streams = "/".join([f"{s}{suffix}" for s in ss])
+        self._ws_url = f"{base}/{streams}"
 
     async def _book_scanner(self):
-        streams = "/".join([f"{s}@bookTicker" for s in self.symbols])
-        url = f"wss://stream.binance.com:9443/ws/{streams}"
-        log.info("[INFO] SCANNER: Connecting to Binance bookTicker WebSocket...")
+        log.info(f"[INFO] SCANNER: Connecting to {self.exchange_id} bookTicker WebSocket...")
 
         while True:
             try:
-                async with websockets.connect(url) as websocket:
-                    log.info("[INFO] SCANNER: WebSocket connection established successfully.")
+                async with websockets.connect(self._ws_url) as websocket:
+                    log.info(f"[INFO] SCANNER: {self.exchange_id} WebSocket connection established successfully.")
 
                     while True:
                         try:
@@ -64,12 +106,10 @@ class BinanceScanner:
                             max_p = current_mid
 
                             if history_len >= 60:
-                                if current_mid > history[-60]: trend_1m = "UP"
-                                elif current_mid < history[-60]: trend_1m = "DOWN"
+                                trend_1m = _murphy_trend(list(history), 60, 3)
 
                             if history_len >= 300:
-                                if current_mid > history[-300]: trend_5m = "UP"
-                                elif current_mid < history[-300]: trend_5m = "DOWN"
+                                trend_5m = _murphy_trend(list(history), 300, 3)
 
                             if history_len > 1:
                                 max_p = max(history)
@@ -120,15 +160,21 @@ class BinanceScanner:
                             await asyncio.sleep(1)
 
             except Exception as e:
-                log.error(f"[ERROR] SCANNER: WebSocket server disconnected. Retrying in 5s... ({e})")
+                log.error(f"[ERROR] SCANNER: {self.exchange_id} WebSocket disconnected. Retrying in 5s... ({e})")
                 await asyncio.sleep(5)
 
     async def start_scanning(self):
         await self._book_scanner()
 
+
 if __name__ == "__main__":
-    scanner = BinanceScanner()
+    exchange_id = "binance"
+    args = sys.argv[1:]
+    if args and args[0].startswith("--exchange="):
+        exchange_id = args[0].split("=", 1)[1]
+        args = args[1:]
+    scanner = MarketScanner(exchange_id, args)
     try:
         asyncio.run(scanner.start_scanning())
     except KeyboardInterrupt:
-        log.info("\n[INFO] SCANNER: Scanner stopped by user.")
+        log.info(f"\n[INFO] SCANNER: Scanner stopped by user.")

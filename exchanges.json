@@ -1,0 +1,15 @@
+{
+  "binance": {
+    "rest": {
+      "base_url": "https://api.binance.com",
+      "ticker_24hr": "/api/v3/ticker/24hr",
+      "klines": "/api/v3/klines"
+    },
+    "ws": {
+      "base_url": "wss://stream.binance.com:9443/ws",
+      "book_ticker_suffix": "@bookTicker",
+      "combined": true,
+      "symbol_case": "lower"
+    }
+  }
+}

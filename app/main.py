@@ -2,7 +2,7 @@ import json
 import redis
 import asyncio
 import time
-import logging, os
+import logging, os, sys
 import urllib.request
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -29,6 +29,18 @@ tfh = logging.FileHandler(TRADESFILE, mode="w")
 tfh.setFormatter(fmt)
 trades_log.addHandler(tfh)
 
+EXCHANGES_CFG = {}
+_cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "exchanges.json")
+try:
+    with open(_cfg_path) as f:
+        EXCHANGES_CFG = json.load(f)
+except FileNotFoundError:
+    log.error(f"[INIT] exchanges.json not found at {_cfg_path}")
+    sys.exit(1)
+
+EXCHANGE_ID = "binance"
+EXCHANGE = EXCHANGES_CFG.get(EXCHANGE_ID, {})
+
 r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 lock = asyncio.Lock()
 scanner_process = None
@@ -36,7 +48,7 @@ _scanner_stop_event = asyncio.Event()
 
 TOPFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "top_pairs.json")
 
-CONFIG = {"imbalance": 20, "tp_pct": 1.5, "trail_pct": 0.6, "sl_pct": 2.0}
+CONFIG = {"imbalance": 4, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0}
 
 def load_traded_symbols():
     try:
@@ -52,7 +64,8 @@ def load_traded_symbols():
     return []
 
 async def run_screener():
-    url = "https://api.binance.com/api/v3/ticker/24hr"
+    rest = EXCHANGE.get("rest", {})
+    url = f"{rest.get('base_url', 'https://api.binance.com')}{rest.get('ticker_24hr', '/api/v3/ticker/24hr')}"
     try:
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(None, lambda: urllib.request.urlopen(url).read())
@@ -96,7 +109,7 @@ async def _scanner_watchdog():
                 break
             try:
                 scanner_process = await asyncio.create_subprocess_exec(
-                    "python3", "app/scanner.py", *TRADED_SYMBOLS
+                    "python3", "app/scanner.py", f"--exchange={EXCHANGE_ID}", *TRADED_SYMBOLS
                 )
                 log.info("[WATCHDOG] Scanner restarted.")
             except Exception as e:
@@ -126,7 +139,7 @@ async def _restart_scanner(new_symbols):
 
     TRADED_SYMBOLS = new_symbols
     scanner_process = await asyncio.create_subprocess_exec(
-        "python3", "app/scanner.py", *TRADED_SYMBOLS
+        "python3", "app/scanner.py", f"--exchange={EXCHANGE_ID}", *TRADED_SYMBOLS
     )
     log.info(f"[SCREEN] Scanner restarted with {len(TRADED_SYMBOLS)} symbols: {', '.join(TRADED_SYMBOLS)}")
     r.delete("trading_locked")
@@ -163,7 +176,7 @@ async def lifespan(app: FastAPI):
     log.info(f"[INIT] Trading {len(TRADED_SYMBOLS)} symbols: {', '.join(TRADED_SYMBOLS)}")
     _scanner_stop_event.clear()
     scanner_process = await asyncio.create_subprocess_exec(
-        "python3", "app/scanner.py", *TRADED_SYMBOLS
+        "python3", "app/scanner.py", f"--exchange={EXCHANGE_ID}", *TRADED_SYMBOLS
     )
     asyncio.create_task(_scanner_watchdog())
 
@@ -227,15 +240,80 @@ def compute_unrealized_net_pct(position, market_price):
     val_retorno, _ = compute_effective_sell_return(position['amount'], market_price)
     return ((val_retorno - cost) / cost) * 100
 
+_klines_cache = {}
+
+def _fetch_klines_1m(symbol, limit=60):
+    rest = EXCHANGE.get("rest", {})
+    base = rest.get('base_url', 'https://api.binance.com')
+    path = rest.get('klines', '/api/v3/klines')
+    try:
+        raw = urllib.request.urlopen(f"{base}{path}?symbol={symbol}&interval=1m&limit={limit}", timeout=5).read()
+        data = json.loads(raw)
+        return [(float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])) for k in data]
+    except Exception:
+        return None
+
+def _analyze_klines(symbol):
+    now = time.time()
+    entry = _klines_cache.get(symbol)
+    if entry and now - entry["ts"] < 60:
+        return entry
+    klines = _fetch_klines_1m(symbol)
+    if not klines or len(klines) < 10:
+        _klines_cache[symbol] = {"ts": now, "vol": 0.0, "polarity_ok": True}
+        return _klines_cache[symbol]
+    ce = {"ts": now}
+    avg_vol = sum(v for _, _, _, _, v in klines[:-1]) / len(klines[:-1])
+    if avg_vol > 0:
+        bullish = sum(1 for o, _, _, c, v in klines[-3:] if c > o and v >= avg_vol)
+        ce["vol"] = bullish / 3.0
+    else:
+        ce["vol"] = 0.0
+    mid = len(klines) // 2
+    old = [{"h": h, "l": l} for _, h, l, _, _ in klines[:mid]]
+    recent = klines[mid:]
+    current = klines[-1][3]
+    pivots = []
+    for i in range(2, len(old) - 2):
+        if all(old[i]["h"] > old[i + j]["h"] for j in (-2, -1, 1, 2)):
+            pivots.append({"price": old[i]["h"], "type": "R"})
+        if all(old[i]["l"] < old[i + j]["l"] for j in (-2, -1, 1, 2)):
+            pivots.append({"price": old[i]["l"], "type": "S"})
+    polarity_ok = True
+    if len(pivots) >= 2:
+        pivots.sort(key=lambda x: x["price"])
+        clusters = []
+        for p in pivots:
+            merged = False
+            for c in clusters:
+                if abs(c["price"] - p["price"]) / c["price"] < 0.002:
+                    c["price"] = (c["price"] * c["count"] + p["price"]) / (c["count"] + 1)
+                    c["count"] += 1
+                    if p["type"] == "R":
+                        c["type"] = "R"
+                    merged = True
+                    break
+            if not merged:
+                clusters.append({"price": p["price"], "type": p["type"], "count": 1})
+        for c in clusters:
+            if c["type"] == "S" and any(l < c["price"] for _, _, l, _, _ in recent):
+                if c["price"] > current and (c["price"] - current) / current < 0.003:
+                    polarity_ok = False
+                    break
+    ce["polarity_ok"] = polarity_ok
+    _klines_cache[symbol] = ce
+    return ce
+
+def get_volume_ratio(symbol):
+    return _analyze_klines(symbol).get("vol", 0.0)
+
+def check_polarity_ok(symbol):
+    return _analyze_klines(symbol).get("polarity_ok", True)
+
 def should_buy(data, cfg):
     imbalance = float(data['imbalance'])
-    if imbalance < cfg['imbalance']:
-        return False, f"imbalance {imbalance:.1f}x < {cfg['imbalance']}x"
-
     trend_1m = data.get('trend_1m', 'NEUTRAL')
     trend_5m = data.get('trend_5m', 'NEUTRAL')
-    if trend_1m != 'UP' or trend_5m != 'UP':
-        return False, f"trend 1m={trend_1m} 5m={trend_5m} (need UP/UP)"
 
     range_pct = float(data.get('range_pct', 100))
     if range_pct > 50:
@@ -245,7 +323,22 @@ def should_buy(data, cfg):
     if change_1h < -8.0:
         return False, f"1h change {change_1h:.1f}% < -8%"
 
-    return True, f"imbalance {imbalance:.1f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%, trend UP/UP"
+    momentum_ok = imbalance >= cfg['imbalance']
+    trend_ok = trend_1m == 'UP' and trend_5m != 'DOWN'
+
+    if not momentum_ok and not trend_ok:
+        return False, f"no entry: imbalance {imbalance:.1f}x (need ≥{cfg['imbalance']}x), trend 1m={trend_1m} 5m={trend_5m} (need 1m=UP & 5m≠DOWN)"
+
+    vol_ratio = get_volume_ratio(data['symbol'])
+    if vol_ratio < 0.66:
+        return False, f"volume {vol_ratio:.0%} bullish candles < 66% (no confirmation)"
+
+    if not check_polarity_ok(data['symbol']):
+        return False, f"polarity: flipped support-resistance blocking upside"
+
+    if momentum_ok:
+        return True, f"momentum: imbalance {imbalance:.1f}x, vol {vol_ratio:.2f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%"
+    return True, f"trend: 1m={trend_1m} 5m={trend_5m}, vol {vol_ratio:.2f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%"
 
 async def monitoring_loop():
     while True:
@@ -416,7 +509,8 @@ async def get_status():
     return {
         "market": json.loads(m) if m else [],
         "wallet": wallet,
-        "trading_locked": bool(r.get("trading_locked"))
+        "trading_locked": bool(r.get("trading_locked")),
+        "exchange": EXCHANGE_ID
     }
 
 @app.get("/api/positions")
@@ -569,15 +663,18 @@ def get_trade_markers(symbol):
 @app.get("/api/klines/{symbol}")
 async def get_klines(symbol: str):
     symbol = symbol.upper()
-    interval = "5m"
+    interval = "1m"
     now = time.time()
     cached = r.hget("klines_data", f"{symbol}:{interval}")
     if cached:
         entry = json.loads(cached)
-        if now - entry.get("ts", 0) < 300:
+        if now - entry.get("ts", 0) < 60:
             return {"symbol": symbol, "klines": entry["klines"], "levels": calc_sr_levels(entry["klines"]), "trendlines": calc_trend_lines(entry["klines"]), "markers": get_trade_markers(symbol)}
 
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=96"
+    rest = EXCHANGE.get("rest", {})
+    base = rest.get('base_url', 'https://api.binance.com')
+    path = rest.get('klines', '/api/v3/klines')
+    url = f"{base}{path}?symbol={symbol}&interval={interval}&limit=240"
     try:
         loop = asyncio.get_event_loop()
         raw = await loop.run_in_executor(None, lambda: urllib.request.urlopen(url, timeout=10).read())
@@ -598,23 +695,18 @@ async def get_klines(symbol: str):
         markers = get_trade_markers(symbol)
         return {"symbol": symbol, "klines": klines, "levels": levels, "trendlines": trendlines, "markers": markers}
     except Exception as e:
-        return {"symbol": symbol, "error": str(e), "klines": [], "levels": [], "trendlines": [], "markers": []}
+        return {"symbol": symbol, "error": str(e), "klines": [], "levels": {"supports": [], "resistances": [], "flipped": []}, "trendlines": [], "markers": []}
 
-def calc_sr_levels(klines):
-    if len(klines) < 10:
-        return []
+def _find_pivot_clusters(klines):
     pivots = []
     for i in range(2, len(klines) - 2):
         if all(klines[i]["h"] > klines[i + j]["h"] for j in (-2, -1, 1, 2)):
             pivots.append({"price": klines[i]["h"], "type": "R"})
         if all(klines[i]["l"] < klines[i + j]["l"] for j in (-2, -1, 1, 2)):
             pivots.append({"price": klines[i]["l"], "type": "S"})
-
     if len(pivots) < 2:
         return []
-
     pivots.sort(key=lambda x: x["price"])
-    tol = max(k["h"] for k in klines) * 0.002
     clusters = []
     for p in pivots:
         merged = False
@@ -628,12 +720,41 @@ def calc_sr_levels(klines):
                 break
         if not merged:
             clusters.append({"price": p["price"], "type": p["type"], "count": 1})
-
     clusters.sort(key=lambda x: x["count"], reverse=True)
+    return clusters
+
+def calc_sr_levels(klines):
+    if len(klines) < 20:
+        return {"supports": [], "resistances": [], "flipped": []}
+    mid = len(klines) // 2
+    old_klines = klines[:mid]
+    recent_klines = klines[mid:]
+    clusters = _find_pivot_clusters(old_klines)
+    if not clusters:
+        return {"supports": [], "resistances": [], "flipped": []}
     current = klines[-1]["c"]
-    supports = sorted([c for c in clusters if c["price"] < current and c["count"] >= 1], key=lambda x: x["price"], reverse=True)[:3]
-    resistances = sorted([c for c in clusters if c["price"] > current], key=lambda x: x["price"])[:3]
-    return {"supports": [round(s["price"], 2) for s in supports], "resistances": [round(r["price"], 2) for r in resistances]}
+    supports, resistances, flipped = [], [], []
+    for c in clusters:
+        p = round(c["price"], 2)
+        if c["type"] == "S":
+            broken = any(k["l"] < c["price"] for k in recent_klines)
+            if broken:
+                if c["price"] > current:
+                    flipped.append({"price": p, "type": "S-R"})
+            else:
+                if c["price"] < current:
+                    supports.append(p)
+        else:
+            broken = any(k["h"] > c["price"] for k in recent_klines)
+            if broken:
+                if c["price"] < current:
+                    flipped.append({"price": p, "type": "R-S"})
+            else:
+                if c["price"] > current:
+                    resistances.append(p)
+    supports.sort(reverse=True)
+    resistances.sort()
+    return {"supports": supports[:3], "resistances": resistances[:3], "flipped": flipped[:3]}
 
 def calc_trend_lines(klines):
     if len(klines) < 20:
@@ -655,7 +776,7 @@ def calc_trend_lines(klines):
         for i in range(len(lows) - 2, -1, -1):
             if lows[i]["price"] < best_seq[0]["price"]:
                 best_seq.insert(0, lows[i])
-        if len(best_seq) >= 2:
+        if len(best_seq) >= 3:
             result.append({"type": "uptrend", "start_time": best_seq[0]["time"], "start_price": best_seq[0]["price"], "end_time": best_seq[-1]["time"], "end_price": best_seq[-1]["price"]})
 
     if len(highs) >= 2:
@@ -663,7 +784,7 @@ def calc_trend_lines(klines):
         for i in range(len(highs) - 2, -1, -1):
             if highs[i]["price"] > best_seq[0]["price"]:
                 best_seq.insert(0, highs[i])
-        if len(best_seq) >= 2:
+        if len(best_seq) >= 3:
             result.append({"type": "downtrend", "start_time": best_seq[0]["time"], "start_price": best_seq[0]["price"], "end_time": best_seq[-1]["time"], "end_price": best_seq[-1]["price"]})
 
     return result

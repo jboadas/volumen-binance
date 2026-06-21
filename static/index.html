@@ -42,6 +42,18 @@
             font-weight: 600;
         }
 
+        .exchange-badge {
+            font-size: 12px;
+            font-weight: 400;
+            color: #a0aec0;
+            background: #1a202c;
+            padding: 2px 8px;
+            border-radius: 4px;
+            border: 1px solid #2d3748;
+            vertical-align: middle;
+            margin-left: 6px;
+        }
+
         .wallet-panel {
             background: #1a202c;
             border: 1px solid #2d3748;
@@ -518,7 +530,7 @@
     <div class="container">
         <header>
             <div>
-                <h1>MicroScanner</h1>
+                <h1>MicroScanner <span id="exchange-label" class="exchange-badge">?</span></h1>
             </div>
             <div class="wallet-panel">
                 <div class="wallet-metric">
@@ -740,6 +752,7 @@
                 const data = await response.json();
 
                 updateLockBtn(data.trading_locked);
+                document.getElementById('exchange-label').innerText = data.exchange || '?';
 
                 const wallet = data.wallet || { balance: 0.0, pnl: 0.0 };
                 document.getElementById('wallet-balance').innerText = `$${parseFloat(wallet.balance).toFixed(2)}`;
@@ -1000,7 +1013,7 @@
                     });
                 }
 
-                const levels = data.levels || { supports: [], resistances: [] };
+                const levels = data.levels || { supports: [], resistances: [], flipped: [] };
                 levels.supports.forEach(price => {
                     candleSeries.createPriceLine({
                         price: price,
@@ -1019,6 +1032,16 @@
                         lineStyle: LightweightCharts.LineStyle.Dashed,
                         axisLabelVisible: true,
                         title: 'R',
+                    });
+                });
+                levels.flipped.forEach(fl => {
+                    candleSeries.createPriceLine({
+                        price: fl.price,
+                        color: fl.type === 'S-R' ? '#ed8936' : '#9f7aea',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: fl.type === 'S-R' ? 'S→R' : 'R→S',
                     });
                 });
             } catch (err) {
