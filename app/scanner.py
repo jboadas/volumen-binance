@@ -135,6 +135,8 @@ class MarketScanner:
                             else:
                                 price_direction = "NEUTRAL"
 
+                            liquidity = bid_q * bid_p + ask_q * ask_p
+
                             self.market_data[symbol].update({
                                 "symbol": symbol,
                                 "bid": bid_p,
@@ -148,6 +150,7 @@ class MarketScanner:
                                 "high_1h": max_p,
                                 "bid_rising": bid_rising,
                                 "change_1h_pct": round(change_1h_pct, 2),
+                                "liquidity": round(liquidity, 2),
                             })
 
                             market_list = [v for v in self.market_data.values() if v]

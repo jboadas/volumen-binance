@@ -310,35 +310,56 @@ def get_volume_ratio(symbol):
 def check_polarity_ok(symbol):
     return _analyze_klines(symbol).get("polarity_ok", True)
 
-def should_buy(data, cfg):
+def should_buy(data, cfg, btc_weak=False, regime="normal"):
     imbalance = float(data['imbalance'])
     trend_1m = data.get('trend_1m', 'NEUTRAL')
     trend_5m = data.get('trend_5m', 'NEUTRAL')
+    change_1h = float(data.get('change_1h_pct', 0))
 
     range_pct = float(data.get('range_pct', 100))
-    if range_pct > 50:
-        return False, f"range {range_pct:.0f}% > 50%"
+    if regime == "trending":
+        range_limit = 80
+    elif change_1h > 5.0 or imbalance > 3.0:
+        range_limit = 70
+    else:
+        range_limit = 50
+    if regime == "rango":
+        range_limit = min(range_limit, 50)
+    if range_pct > range_limit:
+        return False, f"range {range_pct:.0f}% > {range_limit}%", "none"
 
-    change_1h = float(data.get('change_1h_pct', 0))
     if change_1h < -8.0:
-        return False, f"1h change {change_1h:.1f}% < -8%"
+        return False, f"1h change {change_1h:.1f}% < -8%", "none"
 
-    momentum_ok = imbalance >= cfg['imbalance']
+    imbalance_req = cfg['imbalance']
+    if regime == "rango":
+        imbalance_req += 2
+    if btc_weak and data['symbol'] != 'BTCUSDT':
+        imbalance_req = max(imbalance_req, 6)
+
+    momentum_ok = imbalance >= imbalance_req
     trend_ok = trend_1m == 'UP' and trend_5m != 'DOWN'
 
     if not momentum_ok and not trend_ok:
-        return False, f"no entry: imbalance {imbalance:.1f}x (need ≥{cfg['imbalance']}x), trend 1m={trend_1m} 5m={trend_5m} (need 1m=UP & 5m≠DOWN)"
+        return False, f"no entry: imbalance {imbalance:.1f}x (need ≥{imbalance_req}x), trend 1m={trend_1m} 5m={trend_5m} (need 1m=UP & 5m≠DOWN)", "none"
 
     vol_ratio = get_volume_ratio(data['symbol'])
     if vol_ratio < 0.66:
-        return False, f"volume {vol_ratio:.0%} bullish candles < 66% (no confirmation)"
+        return False, f"volume {vol_ratio:.0%} bullish candles < 66% (no confirmation)", "none"
 
     if not check_polarity_ok(data['symbol']):
-        return False, f"polarity: flipped support-resistance blocking upside"
+        return False, f"polarity: flipped support-resistance blocking upside", "none"
+
+    if momentum_ok and imbalance >= 15 and trend_1m == "UP" and vol_ratio >= 0.8:
+        conviction = "high"
+    elif momentum_ok:
+        conviction = "medium"
+    else:
+        conviction = "low"
 
     if momentum_ok:
-        return True, f"momentum: imbalance {imbalance:.1f}x, vol {vol_ratio:.2f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%"
-    return True, f"trend: 1m={trend_1m} 5m={trend_5m}, vol {vol_ratio:.2f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%"
+        return True, f"momentum: imbalance {imbalance:.1f}x, vol {vol_ratio:.2f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%", conviction
+    return True, f"trend: 1m={trend_1m} 5m={trend_5m}, vol {vol_ratio:.2f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%", conviction
 
 async def monitoring_loop():
     while True:
@@ -360,7 +381,27 @@ async def monitoring_loop():
         if not market:
             continue
 
+        neutral_count = sum(1 for it in market.values() if it.get('trend_1m') == 'NEUTRAL' and it.get('trend_5m') == 'NEUTRAL')
+        total_count = len(market)
+        regime = "rango" if total_count > 0 and (neutral_count / total_count) > 0.6 else "trending" if total_count > 0 and (total_count - neutral_count) / total_count > 0.4 else "normal"
+        prev_regime = r.get("market_regime")
+        if regime != prev_regime:
+            r.set("market_regime", regime)
+            imb_bonus = 2 if regime == "rango" else 0
+            rlimit = "50-80" if regime == "trending" else "50" if regime == "rango" else "50/70"
+            tp_str = "1.3%" if regime == "rango" else "1.5%"
+            tr_str = "0.8%" if regime == "rango" else "1.5%" if regime == "trending" else "1.0%"
+            log.info(f"[REGIME] {regime.upper()} | range≤{rlimit} | imbalance_bonus={imb_bonus:+d} | tp={tp_str} | trail={tr_str} | {neutral_count}/{total_count} neutral" + (f" (was {prev_regime})" if prev_regime else ""))
+
         async with lock:
+            if regime == "rango" and prev_regime and prev_regime != "rango":
+                for symbol, pos_raw in positions.items():
+                    pos = json.loads(pos_raw)
+                    if pos.get('trailing_active') and not pos.get('scale_trail_pct'):
+                        pos['scale_trail_pct'] = 0.8
+                        r.hset("open_positions", symbol, json.dumps(pos))
+                        log.info(f"[REGIME] Forced tight trail on {symbol} (regime → rango)")
+
             # --- 1. PROCESAR VENTAS CON TRAILING TP ---
             for symbol, pos_raw in positions.items():
                 pos = json.loads(pos_raw)
@@ -369,6 +410,9 @@ async def monitoring_loop():
                 m = market[symbol]
                 cur_price = (float(m['bid']) + float(m['ask'])) / 2
                 cfg = get_config(symbol)
+                effective_tp = 1.3 if regime == "rango" else cfg['tp_pct']
+                effective_sl_pct = cfg['sl_pct']
+                effective_trail = 0.8 if regime == "rango" else 1.5 if regime == "trending" else cfg['trail_pct']
 
                 stop_loss_price = float(pos.get("stop_loss_price", float(pos.get("buy_price", 0)) * 0.995))
                 high_water_mark = float(pos.get("high_water_mark", float(pos.get("buy_price", 0))))
@@ -377,14 +421,63 @@ async def monitoring_loop():
                 # Update high water mark and trailing stop loss
                 if cur_price > high_water_mark:
                     high_water_mark = cur_price
-                    new_sl = high_water_mark * (1 - cfg['sl_pct'] / 100)
+                    new_sl = high_water_mark * (1 - effective_sl_pct / 100)
                     if new_sl > stop_loss_price:
                         stop_loss_price = new_sl
 
                 # Activate trailing on first touch of min TP
                 if not trailing_active:
                     pnl = compute_unrealized_net_pct(pos, cur_price)
-                    if pnl >= cfg['tp_pct']:
+                    if pnl >= effective_tp:
+                        if not pos.get('partial_closed', False):
+                            amount_full = float(pos['amount'])
+                            cost_full = float(pos.get('cost', 0.0))
+                            half_amount = amount_full / 2
+                            half_cost = cost_full / 2
+
+                            val_retorno, sell_price_effective = compute_effective_sell_return(half_amount, cur_price)
+                            pct_ganancia = ((val_retorno - half_cost) / half_cost) * 100 if half_cost > 0 else 0.0
+
+                            wallet_partial = load_wallet()
+                            wallet_partial['balance'] = float(wallet_partial['balance']) + float(val_retorno)
+                            wallet_partial['pnl'] = float(wallet_partial['pnl']) + float(pct_ganancia)
+                            r.set("wallet", json.dumps(wallet_partial))
+
+                            partial_trade = {
+                                "symbol": symbol,
+                                "entry": float(pos.get('buy_price', 0)),
+                                "buy_ts": float(pos.get('buy_ts', 0)),
+                                "exit": cur_price,
+                                "qty": half_amount,
+                                "cost": half_cost,
+                                "return": round(val_retorno, 4),
+                                "pnl_pct": round(pct_ganancia, 2),
+                                "reason": "TP_PARTIAL",
+                                "ts": time.time()
+                            }
+                            r.lpush("trade_history", json.dumps(partial_trade))
+                            r.ltrim("trade_history", 0, 199)
+
+                            ps_key = f"pair_stats:{symbol}"
+                            ps_existing = r.hgetall(ps_key)
+                            ps_ret = float(ps_existing.get("total_return", 0)) if ps_existing else 0.0
+                            ps_cost = float(ps_existing.get("total_cost", 0)) if ps_existing else 0.0
+                            ps_cnt = int(ps_existing.get("trade_count", 0)) if ps_existing else 0
+                            r.hset(ps_key, mapping={
+                                "total_return": str(round(ps_ret + val_retorno, 4)),
+                                "total_cost": str(round(ps_cost + half_cost, 4)),
+                                "trade_count": str(ps_cnt + 1),
+                            })
+
+                            log.info(f"[PARTIAL] {symbol}: closed 50% at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
+                            trades_log.info(f"[PARTIAL] {symbol}: closed 50% at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
+
+                            pos['amount'] = half_amount
+                            pos['cost'] = half_cost
+                            pos['partial_closed'] = True
+                            pos['scale_trail_pct'] = 0.5
+                            pos['high_water_mark'] = cur_price
+
                         trailing_active = True
 
                 # Persist tracking state
@@ -398,13 +491,15 @@ async def monitoring_loop():
                 should_sell = False
                 reason = ""
 
+                trail_pct_effective = float(pos.get('scale_trail_pct', effective_trail))
+
                 if cur_price <= stop_loss_price:
                     reason = "SL"
                     should_sell = True
-                elif trailing_active and cur_price <= high_water_mark * (1 - cfg['trail_pct'] / 100):
+                elif trailing_active and cur_price <= high_water_mark * (1 - trail_pct_effective / 100):
                     reason = "TRAIL"
                     should_sell = True
-                elif trailing_active and pnl < cfg['tp_pct']:
+                elif trailing_active and pnl < effective_tp and not pos.get('partial_closed', False):
                     reason = "TP"
                     should_sell = True
 
@@ -436,18 +531,54 @@ async def monitoring_loop():
                     r.lpush("trade_history", json.dumps(trade))
                     r.ltrim("trade_history", 0, 199)
 
+                    pair_stats_key = f"pair_stats:{symbol}"
+                    existing_stats = r.hgetall(pair_stats_key)
+                    prev_return = float(existing_stats.get("total_return", 0)) if existing_stats else 0.0
+                    prev_cost = float(existing_stats.get("total_cost", 0)) if existing_stats else 0.0
+                    prev_count = int(existing_stats.get("trade_count", 0)) if existing_stats else 0
+                    r.hset(pair_stats_key, mapping={
+                        "total_return": str(round(prev_return + val_retorno, 4)),
+                        "total_cost": str(round(prev_cost + cost, 4)),
+                        "trade_count": str(prev_count + 1),
+                    })
+
                     if reason == "SL":
-                        r.setex(f"cooldown:{symbol}", 300, "blocked")
-                        log.warning(f"[ALERT] SL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
+                        streak = r.incr(f"sl_streak:{symbol}")
+                        r.expire(f"sl_streak:{symbol}", 86400)
+
+                        cur_imb = float(m.get('imbalance', 0))
+                        if cur_imb > 10:
+                            cooldown_sec = 60
+                            cd_reason = f"imbalance {cur_imb:.1f}x > 10x"
+                        elif streak >= 2:
+                            cooldown_sec = 3600
+                            cd_reason = f"{int(streak)} consecutive SLs"
+                        else:
+                            pair_liquidity = float(m.get('liquidity', 50000))
+                            liq_factor = max(0.2, min(5.0, 50000 / max(pair_liquidity, 1)))
+                            cooldown_sec = int(300 * liq_factor)
+                            cd_reason = f"liquidity ${pair_liquidity:,.0f} (x{liq_factor:.1f})"
+
+                        r.setex(f"cooldown:{symbol}", cooldown_sec, "blocked")
+                        log.warning(f"[ALERT] SL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - cooldown {cooldown_sec}s ({cd_reason})")
                         trades_log.warning(f"[ALERT] SL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
                     else:
-                        r.setex(f"cooldown:{symbol}", 60, "blocked")
+                        r.delete(f"sl_streak:{symbol}")
+                        pair_liquidity = float(m.get('liquidity', 50000))
+                        liq_factor = max(0.2, min(5.0, 50000 / max(pair_liquidity, 1)))
+                        cooldown_sec = int(60 * liq_factor)
+                        r.setex(f"cooldown:{symbol}", cooldown_sec, "blocked")
                         log.info(f"[LOG] {reason} on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
                         trades_log.info(f"[LOG] {reason} on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet['balance']:.2f}")
 
             # --- 2. PROCESAR COMPRAS (imbalance + rango + macro) ---
             if r.get("trading_locked"):
                 continue
+
+            btc_weak = False
+            if 'BTCUSDT' in market:
+                btc_imb = float(market['BTCUSDT']['imbalance'])
+                btc_weak = btc_imb < 2.0
 
             for item in market.values():
                 symbol = item['symbol']
@@ -463,15 +594,34 @@ async def monitoring_loop():
                 if has_position:
                     log.info(f"[SKIP] {symbol} already in position")
                     continue
-                if wallet['balance'] < 10.0:
-                    log.info(f"[SKIP] {symbol} balance ${wallet['balance']:.2f} < $10")
+
+                min_balance = 5.0
+                if wallet['balance'] < min_balance:
+                    log.info(f"[SKIP] {symbol} balance ${wallet['balance']:.2f} < ${min_balance:.0f}")
                     continue
 
-                ok, reason = should_buy(item, cfg)
+                pair_stats_raw = r.hgetall(f"pair_stats:{symbol}")
+                if pair_stats_raw:
+                    total_return = float(pair_stats_raw.get("total_return", 0))
+                    total_cost = float(pair_stats_raw.get("total_cost", 0))
+                    net_pnl = total_return - total_cost
+                    if net_pnl < 0:
+                        log.info(f"[SKIP] {symbol} net PnL ${net_pnl:.2f} < $0 (blocked)")
+                        continue
+
+                ok, reason, conviction = should_buy(item, cfg, btc_weak=btc_weak, regime=regime)
 
                 if ok:
                     price = (float(item['bid']) + float(item['ask'])) / 2
-                    invest = 10.0
+                    if conviction == "high":
+                        invest = 20.0
+                    elif conviction == "medium":
+                        invest = 10.0
+                    else:
+                        invest = 5.0
+                    if regime == "trending" and conviction in ("medium", "high"):
+                        invest += 5.0
+                    invest = min(invest, wallet['balance'])
                     qty, buy_price_effective = compute_effective_buy_amount(invest, price)
                     low_1h = float(item.get('low_1h', 0.0))
 
@@ -490,10 +640,11 @@ async def monitoring_loop():
                         "stop_loss_price": sl_price,
                         "high_water_mark": price,
                         "trailing_active": False,
+                        "partial_closed": False,
                     }))
 
-                    log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} ({reason})")
-                    trades_log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} ({reason})")
+                    log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} (${invest:.0f}, {conviction}, {reason})")
+                    trades_log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} (${invest:.0f}, {conviction}, {reason})")
                 else:
                     log.info(f"[SKIP] {symbol} {reason}")
 
@@ -578,6 +729,7 @@ async def simulate_buy(request: Request):
             "stop_loss_price": sl_price,
             "high_water_mark": market_price,
             "trailing_active": False,
+            "partial_closed": False,
         }))
         return {"status": "ok"}
 
