@@ -77,8 +77,27 @@ async def run_screener():
                 volume = float(t['quoteVolume'])
                 high = float(t['highPrice'])
                 low = float(t['lowPrice'])
-                amplitude = ((high - low) / low) * 100 if low > 0 else 0
-                scored.append({"symbol": t['symbol'], "volume": round(volume, 2), "amplitude": round(amplitude, 2), "score": round(volume * amplitude, 2)})
+                change_pct = float(t['priceChangePercent'])
+                if volume < 500_000 or low <= 0:
+                    continue
+                range_pct = ((high - low) / low) * 100
+                # Excluir stablecoins y pares sin movimiento real
+                if range_pct < 1.0:
+                    continue
+                # Sharpe: retorno 24h / rango (proxy de volatilidad)
+                # Solo pares con retorno positivo (long bias)
+                if change_pct <= 0:
+                    continue
+                sharpe = change_pct / range_pct if range_pct > 0 else 0
+                score = volume * sharpe
+                scored.append({
+                    "symbol": t['symbol'],
+                    "volume": round(volume, 2),
+                    "range_pct": round(range_pct, 2),
+                    "change_24h": round(change_pct, 2),
+                    "sharpe": round(sharpe, 4),
+                    "score": round(score, 2)
+                })
             except (ValueError, KeyError):
                 continue
         scored.sort(key=lambda x: x['score'], reverse=True)
@@ -87,7 +106,7 @@ async def run_screener():
             json.dump(top10, f, indent=2)
         log.info("[SCREEN] Top 10 pairs written to top_pairs.json")
         for p in top10:
-            log.info(f"[SCREEN] {p['symbol']}: vol=${p['volume']/1_000_000:.1f}M, amp={p['amplitude']}%, score={p['score']:.0f}")
+            log.info(f"[SCREEN] {p['symbol']}: vol=${p['volume']/1_000_000:.1f}M, range={p['range_pct']}%, 24h={p['change_24h']}%, Sharpe={p['sharpe']:.3f}")
     except Exception as e:
         log.error(f"[SCREEN] Error: {e}")
 
@@ -260,7 +279,7 @@ def _analyze_klines(symbol):
         return entry
     klines = _fetch_klines_1m(symbol)
     if not klines or len(klines) < 10:
-        _klines_cache[symbol] = {"ts": now, "vol": 0.0, "polarity_ok": True}
+        _klines_cache[symbol] = {"ts": now, "vol": 0.0, "vol_trend": False, "polarity_ok": True}
         return _klines_cache[symbol]
     ce = {"ts": now}
     avg_vol = sum(v for _, _, _, _, v in klines[:-1]) / len(klines[:-1])
@@ -269,6 +288,12 @@ def _analyze_klines(symbol):
         ce["vol"] = bullish / 3.0
     else:
         ce["vol"] = 0.0
+    if len(klines) >= 10:
+        vol_last5 = sum(v for _, _, _, _, v in klines[-5:]) / 5
+        vol_prior5 = sum(v for _, _, _, _, v in klines[-10:-5]) / 5
+        ce["vol_trend"] = vol_last5 > vol_prior5
+    else:
+        ce["vol_trend"] = False
     mid = len(klines) // 2
     old = [{"h": h, "l": l} for _, h, l, _, _ in klines[:mid]]
     recent = klines[mid:]
@@ -307,6 +332,9 @@ def _analyze_klines(symbol):
 def get_volume_ratio(symbol):
     return _analyze_klines(symbol).get("vol", 0.0)
 
+def get_volume_trend(symbol):
+    return _analyze_klines(symbol).get("vol_trend", False)
+
 def check_polarity_ok(symbol):
     return _analyze_klines(symbol).get("polarity_ok", True)
 
@@ -324,7 +352,7 @@ def should_buy(data, cfg, btc_weak=False, regime="normal"):
     else:
         range_limit = 50
     if regime == "rango":
-        range_limit = min(range_limit, 50)
+        range_limit = 20
     if range_pct > range_limit:
         return False, f"range {range_pct:.0f}% > {range_limit}%", "none"
 
@@ -347,10 +375,15 @@ def should_buy(data, cfg, btc_weak=False, regime="normal"):
     if vol_ratio < 0.66:
         return False, f"volume {vol_ratio:.0%} bullish candles < 66% (no confirmation)", "none"
 
+    if not get_volume_trend(data['symbol']):
+        return False, f"volume trend declining (last 5 avg < prior 5 avg)", "none"
+
     if not check_polarity_ok(data['symbol']):
         return False, f"polarity: flipped support-resistance blocking upside", "none"
 
-    if momentum_ok and imbalance >= 15 and trend_1m == "UP" and vol_ratio >= 0.8:
+    if imbalance > 10:
+        conviction = "low"
+    elif momentum_ok and imbalance >= 15 and trend_1m == "UP" and vol_ratio >= 0.8:
         conviction = "high"
     elif momentum_ok:
         conviction = "medium"
@@ -411,7 +444,7 @@ async def monitoring_loop():
                 cur_price = (float(m['bid']) + float(m['ask'])) / 2
                 cfg = get_config(symbol)
                 effective_tp = 1.3 if regime == "rango" else cfg['tp_pct']
-                effective_sl_pct = cfg['sl_pct']
+                effective_sl_pct = 3.5 if regime == "rango" else cfg['sl_pct']
                 effective_trail = 0.8 if regime == "rango" else 1.5 if regime == "trending" else cfg['trail_pct']
 
                 stop_loss_price = float(pos.get("stop_loss_price", float(pos.get("buy_price", 0)) * 0.995))
@@ -440,7 +473,7 @@ async def monitoring_loop():
 
                             wallet_partial = load_wallet()
                             wallet_partial['balance'] = float(wallet_partial['balance']) + float(val_retorno)
-                            wallet_partial['pnl'] = float(wallet_partial['pnl']) + float(pct_ganancia)
+                            wallet_partial['pnl'] = float(wallet_partial['pnl']) + float(val_retorno) - float(half_cost)
                             r.set("wallet", json.dumps(wallet_partial))
 
                             partial_trade = {
@@ -511,7 +544,7 @@ async def monitoring_loop():
                     pct_ganancia = ((val_retorno - cost) / cost) * 100 if cost > 0 else 0.0
 
                     wallet['balance'] = float(wallet['balance']) + float(val_retorno)
-                    wallet['pnl'] = float(wallet['pnl']) + float(pct_ganancia)
+                    wallet['pnl'] = float(wallet['pnl']) + float(val_retorno) - float(cost)
 
                     r.set("wallet", json.dumps(wallet))
                     r.hdel("open_positions", symbol)
@@ -605,8 +638,8 @@ async def monitoring_loop():
                     total_return = float(pair_stats_raw.get("total_return", 0))
                     total_cost = float(pair_stats_raw.get("total_cost", 0))
                     net_pnl = total_return - total_cost
-                    if net_pnl < 0:
-                        log.info(f"[SKIP] {symbol} net PnL ${net_pnl:.2f} < $0 (blocked)")
+                    if total_cost > 0 and (net_pnl / total_cost) < -0.10:
+                        log.info(f"[SKIP] {symbol} net PnL {net_pnl/total_cost*100:.1f}% < -10% (blacklisted)")
                         continue
 
                 ok, reason, conviction = should_buy(item, cfg, btc_weak=btc_weak, regime=regime)
@@ -621,12 +654,15 @@ async def monitoring_loop():
                         invest = 5.0
                     if regime == "trending" and conviction in ("medium", "high"):
                         invest += 5.0
+                    if regime == "rango":
+                        invest = min(invest, 10.0)
                     invest = min(invest, wallet['balance'])
                     qty, buy_price_effective = compute_effective_buy_amount(invest, price)
                     low_1h = float(item.get('low_1h', 0.0))
 
-                    sl_price = low_1h if low_1h > 0 else price * (1 - cfg['sl_pct'] / 100)
-                    sl_price = min(sl_price, price * (1 - cfg['sl_pct'] / 100))
+                    effective_sl_pct = 3.5 if regime == "rango" else cfg['sl_pct']
+                    sl_price = low_1h if low_1h > 0 else price * (1 - effective_sl_pct / 100)
+                    sl_price = min(sl_price, price * (1 - effective_sl_pct / 100))
 
                     wallet['balance'] = float(wallet['balance']) - float(invest)
                     r.set("wallet", json.dumps(wallet))
@@ -753,7 +789,7 @@ async def simulate_sell(request: Request):
 
         wallet = load_wallet()
         wallet['balance'] = float(wallet['balance']) + float(val_retorno)
-        wallet['pnl'] = float(wallet['pnl']) + float(pct_ganancia)
+        wallet['pnl'] = float(wallet['pnl']) + float(val_retorno) - float(cost)
         r.set("wallet", json.dumps(wallet))
 
         r.hdel("open_positions", symbol)
