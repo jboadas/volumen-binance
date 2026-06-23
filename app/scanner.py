@@ -7,7 +7,7 @@ from collections import deque
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bot.log")
+LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "bot.log")
 
 log = logging.getLogger("bot")
 log.setLevel(logging.INFO)

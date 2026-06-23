@@ -9,8 +9,8 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
-LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bot.log")
-TRADESFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "trades.log")
+LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "bot.log")
+TRADESFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "trades.log")
 
 log = logging.getLogger("bot")
 log.setLevel(logging.INFO)

@@ -14,3 +14,5 @@ __pycache__/
 *.log
 .DS_Store
 top_pairs.json
+logs/
+.opencode/memory/
