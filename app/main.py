@@ -187,10 +187,13 @@ async def lifespan(app: FastAPI):
     log.info("[INIT] Lifespan started, logger reconfigured.")
 
     global TRADED_SYMBOLS
+    log.info("[INIT] Running market screener...")
+    await run_screener()
+    TRADED_SYMBOLS = load_traded_symbols()
     if not TRADED_SYMBOLS:
-        log.info("[INIT] No symbols found, running market screener...")
-        await run_screener()
-        TRADED_SYMBOLS = load_traded_symbols()
+        log.warning("[INIT] Screener returned no symbols, cannot start.")
+        yield
+        return
 
     log.info(f"[INIT] Trading {len(TRADED_SYMBOLS)} symbols: {', '.join(TRADED_SYMBOLS)}")
     _scanner_stop_event.clear()
