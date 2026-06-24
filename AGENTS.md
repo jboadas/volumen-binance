@@ -17,6 +17,7 @@ Real-time simulated trading bot for Binance. Two-process architecture: `app/main
 - Scanner writes `market_status` key on every bookTicker tick
 - Main reads it every 5s, evaluates buys/sells
 - Wallet is virtual, stored in Redis ($100 initial)
+- **Dynamic symbols**: Scanner tracks `_base_symbols` (from CLI args) + `dynamic_symbols` (Redis set, synced from `open_positions` by main.py). Scanner polls Redis every ~60s and reconnects WS when the set changes. This prevents orphaned positions when symbols drop out of the top 10.
 
 ## Trading Strategy
 
