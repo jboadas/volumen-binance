@@ -437,16 +437,30 @@ async def monitoring_loop():
                         log.info(f"[REGIME] Forced tight trail on {symbol} (regime → rango)")
 
             # --- 1. PROCESAR VENTAS CON TRAILING TP ---
+            now = time.time()
+            for sym in market:
+                r.setex(f"last_seen:{sym}", 1800, str(now))
+
             for symbol, pos_raw in positions.items():
                 pos = json.loads(pos_raw)
                 if symbol not in market:
-                    continue
-                m = market[symbol]
-                cur_price = (float(m['bid']) + float(m['ask'])) / 2
-                cfg = get_config(symbol)
-                effective_tp = 1.3 if regime == "rango" else cfg['tp_pct']
-                effective_sl_pct = 3.5 if regime == "rango" else cfg['sl_pct']
-                effective_trail = 0.8 if regime == "rango" else 1.5 if regime == "trending" else cfg['trail_pct']
+                    last_seen = float(r.get(f"last_seen:{symbol}") or 0)
+                    if now - last_seen <= 300:
+                        continue
+                    cur_price = float(pos.get('entry_price_effective', pos.get('buy_price', 0)))
+                    m = {'liquidity': 50000, 'imbalance': 1.0, 'symbol': symbol}
+                    cfg = get_config(symbol)
+                    effective_tp = cfg['tp_pct']
+                    effective_sl_pct = cfg['sl_pct']
+                    effective_trail = cfg['trail_pct']
+                    log.warning(f"[ORPHAN] {symbol} missing {now-last_seen:.0f}s - force closing at {cur_price:.4f}")
+                else:
+                    m = market[symbol]
+                    cur_price = (float(m['bid']) + float(m['ask'])) / 2
+                    cfg = get_config(symbol)
+                    effective_tp = 1.3 if regime == "rango" else cfg['tp_pct']
+                    effective_sl_pct = 3.5 if regime == "rango" else cfg['sl_pct']
+                    effective_trail = 0.8 if regime == "rango" else 1.5 if regime == "trending" else cfg['trail_pct']
 
                 stop_loss_price = float(pos.get("stop_loss_price", float(pos.get("buy_price", 0)) * 0.995))
                 high_water_mark = float(pos.get("high_water_mark", float(pos.get("buy_price", 0))))
@@ -527,7 +541,10 @@ async def monitoring_loop():
 
                 trail_pct_effective = float(pos.get('scale_trail_pct', effective_trail))
 
-                if cur_price <= stop_loss_price:
+                if symbol not in market:
+                    reason = "ORPHAN"
+                    should_sell = True
+                elif cur_price <= stop_loss_price:
                     reason = "SL"
                     should_sell = True
                 elif trailing_active and cur_price <= high_water_mark * (1 - trail_pct_effective / 100):
