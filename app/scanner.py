@@ -55,20 +55,46 @@ class MarketScanner:
     def __init__(self, exchange_id, symbols):
         self.exchange_id = exchange_id
         self.cfg = EXCHANGES_CFG.get(exchange_id, {})
-        ws_cfg = self.cfg.get("ws", {})
-        self.symbols = symbols
+        self._base_symbols = symbols
         self.r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-        self.market_data = {s.upper(): {} for s in symbols}
-        self.price_history = {s.upper(): deque(maxlen=3600) for s in symbols}
-        self.last_tick_time = {s.upper(): 0 for s in symbols}
-        self.prev_mid = {s.upper(): 0.0 for s in symbols}
+        self.market_data = {}
+        self.price_history = {}
+        self.last_tick_time = {}
+        self.prev_mid = {}
+        self._last_dyn_set = set()
+        self._tick_count = 0
+        self._rebuild_symbols()
 
+    def _build_url(self, sym_list):
+        ws_cfg = self.cfg.get("ws", {})
         suffix = ws_cfg.get("book_ticker_suffix", "@bookTicker")
         base = ws_cfg.get("base_url", "wss://stream.binance.com:9443/ws")
         case = ws_cfg.get("symbol_case", "lower")
-        ss = [s.lower() if case == "lower" else s for s in symbols]
+        ss = [s.lower() if case == "lower" else s for s in sym_list]
         streams = "/".join([f"{s}{suffix}" for s in ss])
-        self._ws_url = f"{base}/{streams}"
+        return f"{base}/{streams}"
+
+    def _rebuild_symbols(self):
+        dyn = set(self.r.smembers("dynamic_symbols") or [])
+        all_syms = list(set(self._base_symbols) | dyn)
+        active = {s.upper() for s in all_syms}
+        for s in list(self.market_data.keys()):
+            if s not in active:
+                del self.market_data[s]
+                del self.price_history[s]
+                del self.last_tick_time[s]
+                del self.prev_mid[s]
+        for s in all_syms:
+            su = s.upper()
+            if su not in self.market_data:
+                self.market_data[su] = {}
+                self.price_history[su] = deque(maxlen=3600)
+                self.last_tick_time[su] = 0
+                self.prev_mid[su] = 0.0
+        self._ws_url = self._build_url(all_syms)
+        self._last_dyn_set = dyn
+        self._symbols = all_syms
+        return all_syms
 
     async def _book_scanner(self):
         log.info(f"[INFO] SCANNER: Connecting to {self.exchange_id} bookTicker WebSocket...")
@@ -155,6 +181,14 @@ class MarketScanner:
 
                             market_list = [v for v in self.market_data.values() if v]
                             self.r.set("market_status", json.dumps(market_list))
+
+                            self._tick_count += 1
+                            if self._tick_count % 60 == 0:
+                                current_dyn = set(self.r.smembers("dynamic_symbols") or [])
+                                if current_dyn != self._last_dyn_set:
+                                    self._rebuild_symbols()
+                                    log.info(f"[INFO] SCANNER: Dynamic symbols changed ({len(current_dyn)} tracked), reconnecting...")
+                                    break
 
                         except (websockets.exceptions.ConnectionClosed, asyncio.exceptions.CancelledError):
                             break
