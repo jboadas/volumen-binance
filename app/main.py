@@ -384,9 +384,7 @@ def should_buy(data, cfg, btc_weak=False, regime="normal"):
     if not check_polarity_ok(data['symbol']):
         return False, f"polarity: flipped support-resistance blocking upside", "none"
 
-    if imbalance > 10:
-        conviction = "low"
-    elif momentum_ok and imbalance >= 15 and trend_1m == "UP" and vol_ratio >= 0.8:
+    if momentum_ok and imbalance >= 8 and trend_1m == "UP" and vol_ratio >= 0.8:
         conviction = "high"
     elif momentum_ok:
         conviction = "medium"
