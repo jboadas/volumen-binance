@@ -706,11 +706,18 @@ async def get_index():
 async def get_status():
     m = r.get("market_status")
     wallet = load_wallet()
+    locked = bool(r.get("trading_locked"))
+    positions_count = r.hlen("open_positions")
+    market_data = json.loads(m) if m else []
+    regime = r.get("market_regime") or "unknown"
     return {
-        "market": json.loads(m) if m else [],
+        "market": market_data,
         "wallet": wallet,
-        "trading_locked": bool(r.get("trading_locked")),
-        "exchange": EXCHANGE_ID
+        "trading_locked": locked,
+        "trading_active": not locked and len(market_data) > 0 and wallet['balance'] >= 5.0,
+        "positions_count": positions_count,
+        "exchange": EXCHANGE_ID,
+        "regime": regime
     }
 
 @app.get("/api/positions")

@@ -53,6 +53,16 @@
             vertical-align: middle;
             margin-left: 6px;
         }
+        .trade-status {
+            font-size: 10px;
+            vertical-align: middle;
+            margin-left: 4px;
+            transition: color 0.3s;
+        }
+        .trade-status.active { color: #38a169; }
+        .trade-status.inactive { color: #e53e3e; }
+        .trade-status.waiting { color: #d69e2e; }
+        }
 
         .wallet-panel {
             background: #1a202c;
@@ -530,7 +540,7 @@
     <div class="container">
         <header>
             <div>
-                <h1>MicroScanner <span id="exchange-label" class="exchange-badge">?</span></h1>
+                <h1>MicroScanner <span id="exchange-label" class="exchange-badge">?</span> <span id="trade-status" class="trade-status" title="Trading status">●</span></h1>
             </div>
             <div class="wallet-panel">
                 <div class="wallet-metric">
@@ -753,6 +763,20 @@
 
                 updateLockBtn(data.trading_locked);
                 document.getElementById('exchange-label').innerText = data.exchange || '?';
+                const ts = document.getElementById('trade-status');
+                if (data.trading_active) {
+                    ts.className = 'trade-status active';
+                    ts.title = 'Trading active - scanning for entries';
+                } else if (data.trading_locked) {
+                    ts.className = 'trade-status inactive';
+                    ts.title = 'Trading locked';
+                } else if (data.positions_count > 0) {
+                    ts.className = 'trade-status active';
+                    ts.title = 'Monitoring open positions';
+                } else {
+                    ts.className = 'trade-status waiting';
+                    ts.title = `${data.market.length} pairs monitored, waiting for entry signal`;
+                }
 
                 const wallet = data.wallet || { balance: 0.0, pnl: 0.0 };
                 document.getElementById('wallet-balance').innerText = `$${parseFloat(wallet.balance).toFixed(2)}`;
