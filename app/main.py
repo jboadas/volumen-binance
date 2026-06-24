@@ -772,7 +772,7 @@ async def simulate_buy(request: Request):
                     low_1h = float(item.get('low_1h', 0.0))
                     break
 
-        cfg = get_config
+        cfg = get_config(symbol)
         sl_price = low_1h if low_1h > 0 else market_price * (1 - cfg['sl_pct'] / 100)
         sl_price = min(sl_price, market_price * (1 - cfg['sl_pct'] / 100))
 
