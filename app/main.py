@@ -430,6 +430,9 @@ def should_buy(data, cfg, btc_weak=False, regime="normal"):
     if not get_volume_trend(symbol):
         return False, f"volume trend declining (last 5 avg < prior 5 avg)", "none"
 
+    if momentum_ok and imbalance >= 10 and vol_ratio < 0.80:
+        return False, f"liquidity trap: imbalance {imbalance:.1f}x but vol only {vol_ratio:.2f}x", "none"
+
     if not check_polarity_ok(symbol):
         return False, f"polarity: flipped support-resistance blocking upside", "none"
 
