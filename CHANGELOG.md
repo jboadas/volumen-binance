@@ -27,3 +27,26 @@ The bot was falling into market liquidity grabs (stop hunts). Analysis of 9 trad
    - Reads 1m klines from Redis cache (best-effort, fails open)
    - Rejects if price is in top 25% of latest candle AND close < high (mecha)
    - Rejects if latest candle range is > 3x the 20-candle average (volatility spike)
+
+## 2026-06-25 — Bugfixes (monitoring loop data races)
+
+### Bugs fixed in `app/main.py`
+
+1. **CRITICAL — `positions` fetched outside lock** (monitoring_loop):
+   - Before: `r.hgetall("open_positions")` at line 457 was outside `async with lock:`
+   - After: moved inside the lock, right after acquiring it
+   - Risk: if API endpoint (`/api/simulate/sell`) ran between the fetch and the lock,
+     the loop would re-save stale positions to Redis, creating phantom positions or
+     double-charging the wallet on sell
+
+2. **MEDIUM — Régimen "normal" unreachable** (monitoring_loop, regime detection):
+   - Before: `"rango" if neutral > 0.6 else "trending" if non-neutral > 0.4 else "normal"`
+   - Since `neutral + non-neutral = 1.0`, if neutral ≤ 0.6 then non-neutral ≥ 0.4
+     → always "trending", "normal" never triggered
+   - After: `"rango" if neutral > 0.6 else "trending" if non-neutral > 0.5 else "normal"`
+
+3. **MEDIUM — `r.hkeys()` re-fetched positions on every symbol** (buy loop):
+   - Before: `symbol in r.hkeys("open_positions")` — N+1 Redis calls per iteration
+   - After: `symbol in positions` — reuses the dict already fetched at start of lock
+
+4. **`_sync_dynamic_symbols()` moved inside lock** to ensure consistent view of open_positions

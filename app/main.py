@@ -454,7 +454,6 @@ async def monitoring_loop():
     while True:
         await asyncio.sleep(5)
 
-        positions = r.hgetall("open_positions")
         market_raw = r.get("market_status")
         if not market_raw:
             continue
@@ -472,7 +471,16 @@ async def monitoring_loop():
 
         neutral_count = sum(1 for it in market.values() if it.get('trend_1m') == 'NEUTRAL' and it.get('trend_5m') == 'NEUTRAL')
         total_count = len(market)
-        regime = "rango" if total_count > 0 and (neutral_count / total_count) > 0.6 else "trending" if total_count > 0 and (total_count - neutral_count) / total_count > 0.4 else "normal"
+        if total_count > 0:
+            neutral_ratio = neutral_count / total_count
+            if neutral_ratio > 0.6:
+                regime = "rango"
+            elif (1 - neutral_ratio) > 0.5:
+                regime = "trending"
+            else:
+                regime = "normal"
+        else:
+            regime = "normal"
         prev_regime = r.get("market_regime")
         if regime != prev_regime:
             r.set("market_regime", regime)
@@ -482,9 +490,9 @@ async def monitoring_loop():
             tr_str = "0.8%" if regime == "rango" else "1.5%" if regime == "trending" else "1.0%"
             log.info(f"[REGIME] {regime.upper()} | range≤{rlimit} | imbalance_bonus={imb_bonus:+d} | tp={tp_str} | trail={tr_str} | {neutral_count}/{total_count} neutral" + (f" (was {prev_regime})" if prev_regime else ""))
 
-        _sync_dynamic_symbols()
-
         async with lock:
+            positions = r.hgetall("open_positions")
+            _sync_dynamic_symbols()
             if regime == "rango" and prev_regime and prev_regime != "rango":
                 for symbol, pos_raw in positions.items():
                     pos = json.loads(pos_raw)
@@ -677,7 +685,7 @@ async def monitoring_loop():
 
                 wallet = load_wallet()
                 in_cooldown = r.exists(f"cooldown:{symbol}")
-                has_position = symbol in r.hkeys("open_positions")
+                has_position = symbol in positions
 
                 if in_cooldown:
                     log.info(f"[SKIP] {symbol} cooldown active")
