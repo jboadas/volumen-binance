@@ -536,49 +536,51 @@ async def monitoring_loop():
                             cost_full = float(pos.get('cost', 0.0))
                             half_amount = amount_full / 2
                             half_cost = cost_full / 2
+                            if half_cost < 10.0:
+                                log.info(f"[PARTIAL] {symbol}: skip partial (${half_cost:.1f} < $10 min notional), close full instead")
+                            else:
+                                val_retorno, sell_price_effective = compute_effective_sell_return(half_amount, cur_price)
+                                pct_ganancia = ((val_retorno - half_cost) / half_cost) * 100 if half_cost > 0 else 0.0
 
-                            val_retorno, sell_price_effective = compute_effective_sell_return(half_amount, cur_price)
-                            pct_ganancia = ((val_retorno - half_cost) / half_cost) * 100 if half_cost > 0 else 0.0
+                                wallet_partial = load_wallet()
+                                wallet_partial['balance'] = float(wallet_partial['balance']) + float(val_retorno)
+                                wallet_partial['pnl'] = float(wallet_partial['pnl']) + float(val_retorno) - float(half_cost)
+                                r.set("wallet", json.dumps(wallet_partial))
 
-                            wallet_partial = load_wallet()
-                            wallet_partial['balance'] = float(wallet_partial['balance']) + float(val_retorno)
-                            wallet_partial['pnl'] = float(wallet_partial['pnl']) + float(val_retorno) - float(half_cost)
-                            r.set("wallet", json.dumps(wallet_partial))
+                                partial_trade = {
+                                    "symbol": symbol,
+                                    "entry": float(pos.get('buy_price', 0)),
+                                    "buy_ts": float(pos.get('buy_ts', 0)),
+                                    "exit": cur_price,
+                                    "qty": half_amount,
+                                    "cost": half_cost,
+                                    "return": round(val_retorno, 4),
+                                    "pnl_pct": round(pct_ganancia, 2),
+                                    "reason": "TP_PARTIAL",
+                                    "ts": time.time()
+                                }
+                                r.lpush("trade_history", json.dumps(partial_trade))
+                                r.ltrim("trade_history", 0, 199)
 
-                            partial_trade = {
-                                "symbol": symbol,
-                                "entry": float(pos.get('buy_price', 0)),
-                                "buy_ts": float(pos.get('buy_ts', 0)),
-                                "exit": cur_price,
-                                "qty": half_amount,
-                                "cost": half_cost,
-                                "return": round(val_retorno, 4),
-                                "pnl_pct": round(pct_ganancia, 2),
-                                "reason": "TP_PARTIAL",
-                                "ts": time.time()
-                            }
-                            r.lpush("trade_history", json.dumps(partial_trade))
-                            r.ltrim("trade_history", 0, 199)
+                                ps_key = f"pair_stats:{symbol}"
+                                ps_existing = r.hgetall(ps_key)
+                                ps_ret = float(ps_existing.get("total_return", 0)) if ps_existing else 0.0
+                                ps_cost = float(ps_existing.get("total_cost", 0)) if ps_existing else 0.0
+                                ps_cnt = int(ps_existing.get("trade_count", 0)) if ps_existing else 0
+                                r.hset(ps_key, mapping={
+                                    "total_return": str(round(ps_ret + val_retorno, 4)),
+                                    "total_cost": str(round(ps_cost + half_cost, 4)),
+                                    "trade_count": str(ps_cnt + 1),
+                                })
 
-                            ps_key = f"pair_stats:{symbol}"
-                            ps_existing = r.hgetall(ps_key)
-                            ps_ret = float(ps_existing.get("total_return", 0)) if ps_existing else 0.0
-                            ps_cost = float(ps_existing.get("total_cost", 0)) if ps_existing else 0.0
-                            ps_cnt = int(ps_existing.get("trade_count", 0)) if ps_existing else 0
-                            r.hset(ps_key, mapping={
-                                "total_return": str(round(ps_ret + val_retorno, 4)),
-                                "total_cost": str(round(ps_cost + half_cost, 4)),
-                                "trade_count": str(ps_cnt + 1),
-                            })
+                                log.info(f"[PARTIAL] {symbol}: closed 50% at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
+                                trades_log.info(f"[PARTIAL] {symbol}: closed 50% at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
 
-                            log.info(f"[PARTIAL] {symbol}: closed 50% at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
-                            trades_log.info(f"[PARTIAL] {symbol}: closed 50% at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%)")
-
-                            pos['amount'] = half_amount
-                            pos['cost'] = half_cost
-                            pos['partial_closed'] = True
-                            pos['scale_trail_pct'] = 0.5
-                            pos['high_water_mark'] = cur_price
+                                pos['amount'] = half_amount
+                                pos['cost'] = half_cost
+                                pos['partial_closed'] = True
+                                pos['scale_trail_pct'] = 0.5
+                                pos['high_water_mark'] = cur_price
 
                         trailing_active = True
 
@@ -720,7 +722,7 @@ async def monitoring_loop():
                     elif conviction == "medium":
                         invest = 10.0
                     else:
-                        invest = 5.0
+                        invest = 10.0
                     if regime == "trending" and conviction in ("medium", "high"):
                         invest += 5.0
                     if regime == "rango":
