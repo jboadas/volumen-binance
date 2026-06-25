@@ -342,17 +342,46 @@ def get_volume_trend(symbol):
 def check_polarity_ok(symbol):
     return _analyze_klines(symbol).get("polarity_ok", True)
 
+def _check_candle_wick(symbol, price):
+    """Reject if price is in the top 25% of the latest 1m candle (best-effort via Redis cache)."""
+    try:
+        cached = r.hget("klines_data", f"{symbol}:1m")
+        if not cached:
+            return True, ""
+        entry = json.loads(cached)
+        if time.time() - entry.get("ts", 0) > 120:
+            return True, ""
+        klines = entry["klines"]
+        if len(klines) < 3:
+            return True, ""
+        latest = klines[-1]
+        lo, hi, close = float(latest["l"]), float(latest["h"]), float(latest["c"])
+        if hi <= lo:
+            return True, ""
+        price_pos = (price - lo) / (hi - lo)
+        if price_pos > 0.75 and close < hi:
+            return False, f"candle wick: price at {price_pos*100:.0f}% of 1m candle"
+        avg_range = sum((float(k["h"]) - float(k["l"])) for k in klines[:-1]) / len(klines[:-1])
+        if avg_range > 0 and (hi - lo) > avg_range * 3:
+            return False, f"candle spike: range {(hi-lo)*100:.4f} > 3x avg {avg_range*100:.4f}"
+    except Exception:
+        pass
+    return True, ""
+
+
 def should_buy(data, cfg, btc_weak=False, regime="normal"):
     imbalance = float(data['imbalance'])
     trend_1m = data.get('trend_1m', 'NEUTRAL')
     trend_5m = data.get('trend_5m', 'NEUTRAL')
     change_1h = float(data.get('change_1h_pct', 0))
+    bid_rising = data.get('bid_rising', False)
+    price_dir = data.get('price_direction', 'NEUTRAL')
 
     range_pct = float(data.get('range_pct', 100))
     if regime == "trending":
         range_limit = 80
-    elif change_1h > 5.0 or imbalance > 3.0:
-        range_limit = 70
+    elif change_1h > 5.0:
+        range_limit = 65
     else:
         range_limit = 50
     if regime == "rango":
@@ -360,13 +389,24 @@ def should_buy(data, cfg, btc_weak=False, regime="normal"):
     if range_pct > range_limit:
         return False, f"range {range_pct:.0f}% > {range_limit}%", "none"
 
+    # Spike trap: price near top of range but bid momentum already fading
+    if range_pct > 75 and not bid_rising:
+        return False, f"spike trap: range {range_pct:.0f}% at top with no bid momentum", "none"
+
     if change_1h < -8.0:
         return False, f"1h change {change_1h:.1f}% < -8%", "none"
+
+    # Candle wick check (best-effort via Redis cache)
+    symbol = data['symbol']
+    price = (float(data['bid']) + float(data['ask'])) / 2
+    wick_ok, wick_reason = _check_candle_wick(symbol, price)
+    if not wick_ok:
+        return False, wick_reason, "none"
 
     imbalance_req = cfg['imbalance']
     if regime == "rango":
         imbalance_req += 2
-    if btc_weak and data['symbol'] != 'BTCUSDT':
+    if btc_weak and symbol != 'BTCUSDT':
         imbalance_req = max(imbalance_req, 6)
 
     momentum_ok = imbalance >= imbalance_req
@@ -375,14 +415,19 @@ def should_buy(data, cfg, btc_weak=False, regime="normal"):
     if not momentum_ok and not trend_ok:
         return False, f"no entry: imbalance {imbalance:.1f}x (need ≥{imbalance_req}x), trend 1m={trend_1m} 5m={trend_5m} (need 1m=UP & 5m≠DOWN)", "none"
 
-    vol_ratio = get_volume_ratio(data['symbol'])
+    # Spoof guard: imbalance without price confirmation
+    if momentum_ok and price_dir != "UP":
+        if imbalance < imbalance_req + 3:
+            return False, f"spoof: imbalance {imbalance:.1f}x but price dir {price_dir} (need +3x)", "none"
+
+    vol_ratio = get_volume_ratio(symbol)
     if vol_ratio < 0.66:
         return False, f"volume {vol_ratio:.0%} bullish candles < 66% (no confirmation)", "none"
 
-    if not get_volume_trend(data['symbol']):
+    if not get_volume_trend(symbol):
         return False, f"volume trend declining (last 5 avg < prior 5 avg)", "none"
 
-    if not check_polarity_ok(data['symbol']):
+    if not check_polarity_ok(symbol):
         return False, f"polarity: flipped support-resistance blocking upside", "none"
 
     if momentum_ok and imbalance >= 8 and trend_1m == "UP" and vol_ratio >= 0.8:
