@@ -343,7 +343,7 @@ def check_polarity_ok(symbol):
     return _analyze_klines(symbol).get("polarity_ok", True)
 
 def _check_candle_wick(symbol, price):
-    """Reject if price is in the top 25% of the latest 1m candle (best-effort via Redis cache)."""
+    """Reject if last COMPLETED 1m candle shows a wick or spike (best-effort via Redis cache)."""
     try:
         cached = r.hget("klines_data", f"{symbol}:1m")
         if not cached:
@@ -352,16 +352,19 @@ def _check_candle_wick(symbol, price):
         if time.time() - entry.get("ts", 0) > 120:
             return True, ""
         klines = entry["klines"]
-        if len(klines) < 3:
+        if len(klines) < 4:
             return True, ""
-        latest = klines[-1]
-        lo, hi, close = float(latest["l"]), float(latest["h"]), float(latest["c"])
+        completed = klines[-2]
+        lo, hi, close = float(completed["l"]), float(completed["h"]), float(completed["c"])
         if hi <= lo:
             return True, ""
+        # Reject if price is in the top 25% of the last CLOSED candle (wick detection)
         price_pos = (price - lo) / (hi - lo)
         if price_pos > 0.75 and close < hi:
-            return False, f"candle wick: price at {price_pos*100:.0f}% of 1m candle"
-        avg_range = sum((float(k["h"]) - float(k["l"])) for k in klines[:-1]) / len(klines[:-1])
+            return False, f"candle wick: price at {price_pos*100:.0f}% of completed 1m candle"
+        # Reject if the completed candle was an abnormal volatility spike
+        prior = klines[:-2]
+        avg_range = sum((float(k["h"]) - float(k["l"])) for k in prior) / len(prior)
         if avg_range > 0 and (hi - lo) > avg_range * 3:
             return False, f"candle spike: range {(hi-lo)*100:.4f} > 3x avg {avg_range*100:.4f}"
     except Exception:

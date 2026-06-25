@@ -50,3 +50,13 @@ The bot was falling into market liquidity grabs (stop hunts). Analysis of 9 trad
    - After: `symbol in positions` — reuses the dict already fetched at start of lock
 
 4. **`_sync_dynamic_symbols()` moved inside lock** to ensure consistent view of open_positions
+
+## 2026-06-25 — Fix candle wick desync
+
+### Changed in `app/main.py`
+
+- `_check_candle_wick` was using `klines[-1]` (current forming candle) whose high/low
+  can still expand mid-check. Changed to `klines[-2]` (last completed 1m candle) to
+  avoid race condition with the candle still forming.
+- Updated avg_range denominator to `klines[:-2]` to exclude the checked candle.
+- Bumped minimum klines length from 3 to 4.
