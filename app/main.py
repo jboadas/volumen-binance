@@ -560,7 +560,38 @@ async def monitoring_loop():
                             half_amount = amount_full / 2
                             half_cost = cost_full / 2
                             if half_cost < 10.0:
-                                log.info(f"[PARTIAL] {symbol}: skip partial (${half_cost:.1f} < $10 min notional), close full instead")
+                                log.info(f"[PARTIAL] {symbol}: half_cost ${half_cost:.1f} < $10, closing full position")
+                                val_retorno, sell_price_effective = compute_effective_sell_return(amount_full, cur_price)
+                                pct_ganancia = ((val_retorno - cost_full) / cost_full) * 100 if cost_full > 0 else 0.0
+                                wallet_full = load_wallet()
+                                wallet_full['balance'] = float(wallet_full['balance']) + float(val_retorno)
+                                wallet_full['pnl'] = float(wallet_full['pnl']) + float(val_retorno) - float(cost_full)
+                                r.set("wallet", json.dumps(wallet_full))
+                                trade = {
+                                    "symbol": symbol, "entry": float(pos.get('buy_price', 0)),
+                                    "buy_ts": float(pos.get('buy_ts', 0)), "exit": cur_price,
+                                    "qty": amount_full, "cost": cost_full,
+                                    "return": round(val_retorno, 4), "pnl_pct": round(pct_ganancia, 2),
+                                    "reason": "TP_FULL", "ts": time.time()
+                                }
+                                r.lpush("trade_history", json.dumps(trade))
+                                r.ltrim("trade_history", 0, 199)
+                                ps_key = f"pair_stats:{symbol}"
+                                ps_existing = r.hgetall(ps_key)
+                                ps_ret = float(ps_existing.get("total_return", 0)) if ps_existing else 0.0
+                                ps_cost = float(ps_existing.get("total_cost", 0)) if ps_existing else 0.0
+                                ps_cnt = int(ps_existing.get("trade_count", 0)) if ps_existing else 0
+                                r.hset(ps_key, mapping={
+                                    "total_return": str(round(ps_ret + val_retorno, 4)),
+                                    "total_cost": str(round(ps_cost + cost_full, 4)),
+                                    "trade_count": str(ps_cnt + 1),
+                                })
+                                r.hdel("open_positions", symbol)
+                                r.delete(f"sl_streak:{symbol}")
+                                r.setex(f"cooldown:{symbol}", 60, "blocked")
+                                log.info(f"[LOG] TP_FULL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet_full['balance']:.2f}")
+                                trades_log.info(f"[LOG] TP_FULL on {symbol} at {sell_price_effective:.4f} (PnL: {pct_ganancia:.2f}%) - Balance: {wallet_full['balance']:.2f}")
+                                continue
                             else:
                                 val_retorno, sell_price_effective = compute_effective_sell_return(half_amount, cur_price)
                                 pct_ganancia = ((val_retorno - half_cost) / half_cost) * 100 if half_cost > 0 else 0.0
@@ -722,7 +753,7 @@ async def monitoring_loop():
                     log.info(f"[SKIP][{regime.upper()}] {symbol} already in position")
                     continue
 
-                min_balance = 5.0
+                min_balance = 10.0
                 if wallet['balance'] < min_balance:
                     log.info(f"[SKIP][{regime.upper()}] {symbol} balance ${wallet['balance']:.2f} < ${min_balance:.0f}")
                     continue
@@ -795,7 +826,7 @@ async def get_status():
         "market": market_data,
         "wallet": wallet,
         "trading_locked": locked,
-        "trading_active": not locked and len(market_data) > 0 and wallet['balance'] >= 5.0,
+        "trading_active": not locked and len(market_data) > 0 and wallet['balance'] >= 10.0,
         "positions_count": positions_count,
         "exchange": EXCHANGE_ID,
         "regime": regime
