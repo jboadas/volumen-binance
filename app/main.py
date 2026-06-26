@@ -298,8 +298,10 @@ async def _analyze_klines(symbol):
     if avg_vol > 0:
         bullish = sum(1 for o, _, _, c, v in klines[-3:] if c > o and v >= avg_vol)
         ce["vol"] = bullish / 3.0
+        ce["vol_detail"] = f"{bullish}/3"
     else:
         ce["vol"] = 0.0
+        ce["vol_detail"] = "0/3"
     if len(klines) >= 10:
         vol_last5 = sum(v for _, _, _, _, v in klines[-5:]) / 5
         vol_prior5 = sum(v for _, _, _, _, v in klines[-10:-5]) / 5
@@ -400,19 +402,22 @@ async def should_buy(data, cfg, btc_weak=False, regime="normal"):
         range_limit = 50
     if regime == "rango":
         range_limit = 20
+    symbol = data['symbol']
+    price = (float(data['bid']) + float(data['ask'])) / 2
+    low_1h = float(data.get('low_1h', 0))
+    high_1h = float(data.get('high_1h', 0))
+
     if range_pct > range_limit:
-        return False, f"range {range_pct:.0f}% > {range_limit}%", "none"
+        return False, f"range {range_pct:.0f}% > {range_limit}% (1h low={low_1h:.2f} high={high_1h:.2f} cur={price:.2f})", "none"
 
     # Spike trap: price near top of range but bid momentum already fading
     if range_pct > 75 and not bid_rising:
-        return False, f"spike trap: range {range_pct:.0f}% at top with no bid momentum", "none"
+        return False, f"spike trap: range {range_pct:.0f}% at top (1h low={low_1h:.2f} high={high_1h:.2f}) no bid momentum", "none"
 
     if change_1h < -8.0:
         return False, f"1h change {change_1h:.1f}% < -8%", "none"
 
     # Candle wick check (best-effort via Redis cache)
-    symbol = data['symbol']
-    price = (float(data['bid']) + float(data['ask'])) / 2
     wick_ok, wick_reason = _check_candle_wick(symbol, price)
     if not wick_ok:
         return False, wick_reason, "none"
@@ -435,14 +440,16 @@ async def should_buy(data, cfg, btc_weak=False, regime="normal"):
             return False, f"spoof: imbalance {imbalance:.1f}x but price dir {price_dir} (need +3x)", "none"
 
     vol_ratio = await get_volume_ratio(symbol)
+    vol_candles = await _analyze_klines(symbol)
+    vol_detail = vol_candles.get("vol_detail", "?/3")
     if vol_ratio < 0.66:
-        return False, f"volume {vol_ratio:.0%} bullish candles < 66% (no confirmation)", "none"
+        return False, f"volume {vol_detail} bullish < 66% vol_ratio={vol_ratio:.2f}", "none"
 
     if not await get_volume_trend(symbol):
-        return False, f"volume trend declining (last 5 avg < prior 5 avg)", "none"
+        return False, f"volume trend declining (last 5 avg < prior 5 avg) vol_ratio={vol_ratio:.2f}", "none"
 
     if momentum_ok and imbalance >= 10 and vol_ratio < 0.80:
-        return False, f"liquidity trap: imbalance {imbalance:.1f}x but vol only {vol_ratio:.2f}x", "none"
+        return False, f"liquidity trap: imbalance {imbalance:.1f}x but vol only {vol_detail} vol_ratio={vol_ratio:.2f}", "none"
 
     if not await check_polarity_ok(symbol):
         return False, f"polarity: flipped support-resistance blocking upside", "none"
@@ -505,7 +512,9 @@ async def monitoring_loop():
             rlimit = "50-80" if regime == "trending" else "50" if regime == "rango" else "50/70"
             tp_str = "1.3%" if regime == "rango" else "1.5%"
             tr_str = "0.8%" if regime == "rango" else "1.5%" if regime == "trending" else "1.0%"
-            log.info(f"[REGIME] {regime.upper()} | range≤{rlimit} | imbalance_bonus={imb_bonus:+d} | tp={tp_str} | trail={tr_str} | {neutral_count}/{total_count} neutral" + (f" (was {prev_regime})" if prev_regime else ""))
+            neutral_syms = [s for s, it in market.items() if it.get('trend_1m') == 'NEUTRAL' and it.get('trend_5m') == 'NEUTRAL']
+            trending_syms = [s for s, it in market.items() if it.get('trend_1m') != 'NEUTRAL' or it.get('trend_5m') != 'NEUTRAL']
+            log.info(f"[REGIME] {regime.upper()} | range≤{rlimit} | imb_bonus={imb_bonus:+d} | tp={tp_str} | trail={tr_str} | {neutral_count}/{total_count} neutral | N:{','.join(neutral_syms)} | T:{','.join(trending_syms)}" + (f" (was {prev_regime})" if prev_regime else ""))
 
         async with lock:
             positions = r.hgetall("open_positions")
@@ -707,15 +716,15 @@ async def monitoring_loop():
                 has_position = symbol in positions
 
                 if in_cooldown:
-                    log.info(f"[SKIP] {symbol} cooldown active")
+                    log.info(f"[SKIP][{regime.upper()}] {symbol} cooldown active")
                     continue
                 if has_position:
-                    log.info(f"[SKIP] {symbol} already in position")
+                    log.info(f"[SKIP][{regime.upper()}] {symbol} already in position")
                     continue
 
                 min_balance = 5.0
                 if wallet['balance'] < min_balance:
-                    log.info(f"[SKIP] {symbol} balance ${wallet['balance']:.2f} < ${min_balance:.0f}")
+                    log.info(f"[SKIP][{regime.upper()}] {symbol} balance ${wallet['balance']:.2f} < ${min_balance:.0f}")
                     continue
 
                 pair_stats_raw = r.hgetall(f"pair_stats:{symbol}")
@@ -724,7 +733,7 @@ async def monitoring_loop():
                     total_cost = float(pair_stats_raw.get("total_cost", 0))
                     net_pnl = total_return - total_cost
                     if total_cost > 0 and (net_pnl / total_cost) < -0.10:
-                        log.info(f"[SKIP] {symbol} net PnL {net_pnl/total_cost*100:.1f}% < -10% (blacklisted)")
+                        log.info(f"[SKIP][{regime.upper()}] {symbol} net PnL {net_pnl/total_cost*100:.1f}% < -10% (blacklisted)")
                         continue
 
                 ok, reason, conviction = await should_buy(item, cfg, btc_weak=btc_weak, regime=regime)
@@ -767,7 +776,7 @@ async def monitoring_loop():
                     log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} (${invest:.0f}, {conviction}, {reason})")
                     trades_log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} (${invest:.0f}, {conviction}, {reason})")
                 else:
-                    log.info(f"[SKIP] {symbol} {reason}")
+                    log.info(f"[SKIP][{regime.upper()}] {symbol} {reason}")
 
 @app.get("/", response_class=HTMLResponse)
 async def get_index():
