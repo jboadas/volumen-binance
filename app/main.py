@@ -265,26 +265,34 @@ def compute_unrealized_net_pct(position, market_price):
 
 _klines_cache = {}
 
-def _fetch_klines_1m(symbol, limit=60):
+async def _fetch_klines_1m(symbol, limit=60):
     rest = EXCHANGE.get("rest", {})
     base = rest.get('base_url', 'https://api.binance.com')
     path = rest.get('klines', '/api/v3/klines')
     try:
-        raw = urllib.request.urlopen(f"{base}{path}?symbol={symbol}&interval=1m&limit={limit}", timeout=5).read()
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(None, lambda: urllib.request.urlopen(
+            f"{base}{path}?symbol={symbol}&interval=1m&limit={limit}", timeout=5).read())
         data = json.loads(raw)
         return [(float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])) for k in data]
     except Exception:
         return None
 
-def _analyze_klines(symbol):
+async def _analyze_klines(symbol):
     now = time.time()
     entry = _klines_cache.get(symbol)
     if entry and now - entry["ts"] < 60:
         return entry
-    klines = _fetch_klines_1m(symbol)
+    klines = await _fetch_klines_1m(symbol)
     if not klines or len(klines) < 10:
         _klines_cache[symbol] = {"ts": now, "vol": 0.0, "vol_trend": False, "polarity_ok": True}
         return _klines_cache[symbol]
+    # Unified klines source: write to Redis for _check_candle_wick
+    try:
+        redis_klines = [{"t": int(time.time() * 1000), "o": o, "h": h, "l": l, "c": c, "v": v} for o, h, l, c, v in klines]
+        r.hset("klines_data", f"{symbol}:1m", json.dumps({"ts": now, "klines": redis_klines}))
+    except Exception:
+        pass
     ce = {"ts": now}
     avg_vol = sum(v for _, _, _, _, v in klines[:-1]) / len(klines[:-1])
     if avg_vol > 0:
@@ -333,14 +341,17 @@ def _analyze_klines(symbol):
     _klines_cache[symbol] = ce
     return ce
 
-def get_volume_ratio(symbol):
-    return _analyze_klines(symbol).get("vol", 0.0)
+async def get_volume_ratio(symbol):
+    result = await _analyze_klines(symbol)
+    return result.get("vol", 0.0)
 
-def get_volume_trend(symbol):
-    return _analyze_klines(symbol).get("vol_trend", False)
+async def get_volume_trend(symbol):
+    result = await _analyze_klines(symbol)
+    return result.get("vol_trend", False)
 
-def check_polarity_ok(symbol):
-    return _analyze_klines(symbol).get("polarity_ok", True)
+async def check_polarity_ok(symbol):
+    result = await _analyze_klines(symbol)
+    return result.get("polarity_ok", True)
 
 def _check_candle_wick(symbol, price):
     """Reject if last COMPLETED 1m candle shows a wick or spike (best-effort via Redis cache)."""
@@ -372,7 +383,7 @@ def _check_candle_wick(symbol, price):
     return True, ""
 
 
-def should_buy(data, cfg, btc_weak=False, regime="normal"):
+async def should_buy(data, cfg, btc_weak=False, regime="normal"):
     imbalance = float(data['imbalance'])
     trend_1m = data.get('trend_1m', 'NEUTRAL')
     trend_5m = data.get('trend_5m', 'NEUTRAL')
@@ -423,17 +434,17 @@ def should_buy(data, cfg, btc_weak=False, regime="normal"):
         if imbalance < imbalance_req + 3:
             return False, f"spoof: imbalance {imbalance:.1f}x but price dir {price_dir} (need +3x)", "none"
 
-    vol_ratio = get_volume_ratio(symbol)
+    vol_ratio = await get_volume_ratio(symbol)
     if vol_ratio < 0.66:
         return False, f"volume {vol_ratio:.0%} bullish candles < 66% (no confirmation)", "none"
 
-    if not get_volume_trend(symbol):
+    if not await get_volume_trend(symbol):
         return False, f"volume trend declining (last 5 avg < prior 5 avg)", "none"
 
     if momentum_ok and imbalance >= 10 and vol_ratio < 0.80:
         return False, f"liquidity trap: imbalance {imbalance:.1f}x but vol only {vol_ratio:.2f}x", "none"
 
-    if not check_polarity_ok(symbol):
+    if not await check_polarity_ok(symbol):
         return False, f"polarity: flipped support-resistance blocking upside", "none"
 
     if momentum_ok and imbalance >= 8 and trend_1m == "UP" and vol_ratio >= 0.8:
@@ -716,7 +727,7 @@ async def monitoring_loop():
                         log.info(f"[SKIP] {symbol} net PnL {net_pnl/total_cost*100:.1f}% < -10% (blacklisted)")
                         continue
 
-                ok, reason, conviction = should_buy(item, cfg, btc_weak=btc_weak, regime=regime)
+                ok, reason, conviction = await should_buy(item, cfg, btc_weak=btc_weak, regime=regime)
 
                 if ok:
                     price = (float(item['bid']) + float(item['ask'])) / 2

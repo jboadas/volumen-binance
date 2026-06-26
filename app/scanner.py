@@ -113,7 +113,7 @@ class MarketScanner:
                             bid_p, bid_q = float(data['b']), float(data['B'])
                             ask_p, ask_q = float(data['a']), float(data['A'])
 
-                            imbalance = bid_q / ask_q if ask_q > 0 else 1.0
+                            imbalance = min(bid_q / ask_q if ask_q > 0 else 1.0, 20.0)
                             current_mid = (bid_p + ask_p) / 2
 
                             now = asyncio.get_event_loop().time()
