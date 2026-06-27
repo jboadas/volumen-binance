@@ -48,7 +48,8 @@ _scanner_stop_event = asyncio.Event()
 
 TOPFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "top_pairs.json")
 
-CONFIG = {"imbalance": 4, "tp_pct": 1.5, "trail_pct": 1.0, "sl_pct": 2.0}
+CONFIG = {"imbalance": 4, "tp_pct": 2.0, "trail_pct": 1.0, "sl_pct": 2.0}
+TRADE_HOURS = (6, 23)
 
 def load_traded_symbols():
     try:
@@ -265,6 +266,15 @@ def compute_unrealized_net_pct(position, market_price):
 
 _klines_cache = {}
 
+def _calc_atr(klines, period=14):
+    if not klines or len(klines) < period + 1:
+        return None
+    tr_sum = 0.0
+    for i in range(1, period + 1):
+        h, l, pc = klines[i][1], klines[i][2], klines[i - 1][3]
+        tr_sum += max(h - l, abs(h - pc), abs(l - pc))
+    return tr_sum / period
+
 async def _fetch_klines_1m(symbol, limit=60):
     rest = EXCHANGE.get("rest", {})
     base = rest.get('base_url', 'https://api.binance.com')
@@ -290,11 +300,13 @@ async def _analyze_klines(symbol):
     # Unified klines source: write to Redis for _check_candle_wick
     try:
         redis_klines = [{"t": int(time.time() * 1000), "o": o, "h": h, "l": l, "c": c, "v": v} for o, h, l, c, v in klines]
-        r.hset("klines_data", f"{symbol}:1m", json.dumps({"ts": now, "klines": redis_klines}))
+        r.hset("candle_check", f"{symbol}:1m", json.dumps({"ts": now, "klines": redis_klines}))
     except Exception:
         pass
     ce = {"ts": now}
     avg_vol = sum(v for _, _, _, _, v in klines[:-1]) / len(klines[:-1])
+    latest_vol = klines[-1][4]
+    ce["vol_activity"] = latest_vol / avg_vol if avg_vol > 0 else 1.0
     if avg_vol > 0:
         bullish = sum(1 for o, _, _, c, v in klines[-3:] if c > o and v >= avg_vol)
         ce["vol"] = bullish / 3.0
@@ -340,6 +352,7 @@ async def _analyze_klines(symbol):
                     polarity_ok = False
                     break
     ce["polarity_ok"] = polarity_ok
+    ce["atr"] = _calc_atr(klines, 14)
     _klines_cache[symbol] = ce
     return ce
 
@@ -358,7 +371,7 @@ async def check_polarity_ok(symbol):
 def _check_candle_wick(symbol, price):
     """Reject if last COMPLETED 1m candle shows a wick or spike (best-effort via Redis cache)."""
     try:
-        cached = r.hget("klines_data", f"{symbol}:1m")
+        cached = r.hget("candle_check", f"{symbol}:1m")
         if not cached:
             return True, ""
         entry = json.loads(cached)
@@ -427,20 +440,29 @@ async def should_buy(data, cfg, btc_weak=False, regime="normal"):
         imbalance_req += 2
     if btc_weak and symbol != 'BTCUSDT':
         imbalance_req = max(imbalance_req, 6)
+    if symbol == 'DOGEUSDT':
+        imbalance_req = max(imbalance_req, 8)
+
+    # Base filter: trend must be UP (triple confirmation architecture)
+    if trend_1m != "UP":
+        return False, f"no entry: trend_1m={trend_1m} ≠ UP (imbalance {imbalance:.1f}x)", "none"
 
     momentum_ok = imbalance >= imbalance_req
-    trend_ok = trend_1m == 'UP' and trend_5m != 'DOWN'
 
-    if not momentum_ok and not trend_ok:
-        return False, f"no entry: imbalance {imbalance:.1f}x (need ≥{imbalance_req}x), trend 1m={trend_1m} 5m={trend_5m} (need 1m=UP & 5m≠DOWN)", "none"
+    if not momentum_ok:
+        return False, f"no entry: imbalance {imbalance:.1f}x (need ≥{imbalance_req}x), trend 1m={trend_1m}", "none"
 
     # Spoof guard: imbalance without price confirmation
     if momentum_ok and price_dir != "UP":
         if imbalance < imbalance_req + 3:
             return False, f"spoof: imbalance {imbalance:.1f}x but price dir {price_dir} (need +3x)", "none"
 
-    vol_ratio = await get_volume_ratio(symbol)
     vol_candles = await _analyze_klines(symbol)
+    vol_activity = vol_candles.get("vol_activity", 0)
+    if vol_activity < 0.5:
+        return False, f"low volume activity: {vol_activity:.2f}x of avg (need ≥0.5x)", "none"
+
+    vol_ratio = await get_volume_ratio(symbol)
     vol_detail = vol_candles.get("vol_detail", "?/3")
     if vol_ratio < 0.66:
         return False, f"volume {vol_detail} bullish < 66% vol_ratio={vol_ratio:.2f}", "none"
@@ -448,22 +470,18 @@ async def should_buy(data, cfg, btc_weak=False, regime="normal"):
     if not await get_volume_trend(symbol):
         return False, f"volume trend declining (last 5 avg < prior 5 avg) vol_ratio={vol_ratio:.2f}", "none"
 
-    if momentum_ok and imbalance >= 10 and vol_ratio < 0.80:
+    if imbalance >= 10 and vol_ratio < 0.80:
         return False, f"liquidity trap: imbalance {imbalance:.1f}x but vol only {vol_detail} vol_ratio={vol_ratio:.2f}", "none"
 
     if not await check_polarity_ok(symbol):
         return False, f"polarity: flipped support-resistance blocking upside", "none"
 
-    if momentum_ok and imbalance >= 8 and trend_1m == "UP" and vol_ratio >= 0.8:
+    if imbalance >= 8 and vol_ratio >= 0.8:
         conviction = "high"
-    elif momentum_ok:
-        conviction = "medium"
     else:
-        conviction = "low"
+        conviction = "medium"
 
-    if momentum_ok:
-        return True, f"momentum: imbalance {imbalance:.1f}x, vol {vol_ratio:.2f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%", conviction
-    return True, f"trend: 1m={trend_1m} 5m={trend_5m}, vol {vol_ratio:.2f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%", conviction
+    return True, f"momentum: imbalance {imbalance:.1f}x, vol {vol_ratio:.2f}x, range {range_pct:.0f}%, 1h {change_1h:.1f}%", conviction
 
 def _sync_dynamic_symbols():
     positions = r.hkeys("open_positions")
@@ -771,23 +789,41 @@ async def monitoring_loop():
 
                 if ok:
                     price = (float(item['bid']) + float(item['ask'])) / 2
-                    if conviction == "high":
-                        invest = 20.0
-                    elif conviction == "medium":
-                        invest = 10.0
-                    else:
-                        invest = 10.0
-                    if regime == "trending" and conviction in ("medium", "high"):
-                        invest += 5.0
-                    if regime == "rango":
-                        invest = min(invest, 10.0)
-                    invest = min(invest, wallet['balance'])
-                    qty, buy_price_effective = compute_effective_buy_amount(invest, price)
                     low_1h = float(item.get('low_1h', 0.0))
 
+                    # 1. Dynamic SL
                     effective_sl_pct = 3.5 if regime == "rango" else cfg['sl_pct']
-                    sl_price = low_1h if low_1h > 0 else price * (1 - effective_sl_pct / 100)
+                    atr_val = _klines_cache.get(symbol, {}).get("atr")
+                    if atr_val and atr_val > 0:
+                        atr_mult = 3.0 if regime == "rango" else 2.5
+                        sl_price = price - atr_val * atr_mult
+                        max_sl = price * 0.05
+                        if price - sl_price > max_sl:
+                            sl_price = price - max_sl
+                            log.info(f"[ATR] {symbol}: ATR=${atr_val:.4f}, capped SL=${sl_price:.4f} (atr_sl was ${price - atr_val * atr_mult:.4f})")
+                        else:
+                            log.info(f"[ATR] {symbol}: ATR=${atr_val:.4f}, SL=${sl_price:.4f} (x{atr_mult})")
+                    else:
+                        sl_price = low_1h if low_1h > 0 else price * (1 - effective_sl_pct / 100)
+                        log.warning(f"[ATR] {symbol}: ATR unavailable, fixed SL=${sl_price:.4f} ({effective_sl_pct}%)")
+                    min_sl_price = price * 0.992
+                    if sl_price > min_sl_price:
+                        sl_price = min_sl_price
                     sl_price = min(sl_price, price * (1 - effective_sl_pct / 100))
+
+                    # 2. Risk-based position sizing
+                    sl_dist_pct = (price - sl_price) / price
+                    risk_per_trade = wallet['balance'] * 0.01
+                    risk_based = risk_per_trade / sl_dist_pct if sl_dist_pct > 0 else wallet['balance']
+
+                    conviction_max = 20.0 if conviction == "high" else 10.0
+                    if regime == "trending" and conviction in ("medium", "high"):
+                        conviction_max += 5.0
+                    if regime == "rango":
+                        conviction_max = min(conviction_max, 10.0)
+
+                    invest = min(risk_based, conviction_max, wallet['balance'])
+                    qty, buy_price_effective = compute_effective_buy_amount(invest, price)
 
                     wallet['balance'] = float(wallet['balance']) - float(invest)
                     r.set("wallet", json.dumps(wallet))
@@ -804,8 +840,10 @@ async def monitoring_loop():
                         "partial_closed": False,
                     }))
 
-                    log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} (${invest:.0f}, {conviction}, {reason})")
-                    trades_log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} (${invest:.0f}, {conviction}, {reason})")
+                    atr_str = f"ATR=${atr_val:.4f}" if (atr_val and atr_val > 0) else "ATR=na"
+                    sl_pct_str = f"SL={((price-sl_price)/price*100):.1f}%"
+                    log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} (${invest:.0f}, {conviction}, {atr_str}, {sl_pct_str}, risk=${risk_per_trade:.2f}, {reason})")
+                    trades_log.info(f"[BUY] {symbol} at {buy_price_effective:.4f} (${invest:.0f}, {conviction}, {atr_str}, {sl_pct_str}, risk=${risk_per_trade:.2f}, {reason})")
                 else:
                     log.info(f"[SKIP][{regime.upper()}] {symbol} {reason}")
 
@@ -994,7 +1032,7 @@ async def get_klines(symbol: str):
     rest = EXCHANGE.get("rest", {})
     base = rest.get('base_url', 'https://api.binance.com')
     path = rest.get('klines', '/api/v3/klines')
-    url = f"{base}{path}?symbol={symbol}&interval={interval}&limit=240"
+    url = f"{base}{path}?symbol={symbol}&interval={interval}&limit=1000"
     try:
         loop = asyncio.get_event_loop()
         raw = await loop.run_in_executor(None, lambda: urllib.request.urlopen(url, timeout=10).read())
@@ -1124,6 +1162,286 @@ async def _rescan_and_rotate():
 async def get_trades():
     raw = r.lrange("trade_history", 0, 49)
     return [json.loads(t) for t in raw]
+
+@app.get("/api/backtest/{symbol}")
+async def backtest_symbol(symbol: str, days: int = 7):
+    symbol = symbol.upper()
+    rest = EXCHANGE.get("rest", {})
+    base = rest.get('base_url', 'https://api.binance.com')
+    path = rest.get('klines', '/api/v3/klines')
+
+    def murphy(history, window, n_segments=3):
+        if len(history) < window or window < n_segments * 2:
+            return "NEUTRAL"
+        seg_size = window // n_segments
+        recent = history[-window:]
+        seg_highs = [max(recent[i*seg_size:(i+1)*seg_size]) for i in range(n_segments)]
+        seg_lows = [min(recent[i*seg_size:(i+1)*seg_size]) for i in range(n_segments)]
+        highs_up = all(seg_highs[i] < seg_highs[i+1] for i in range(n_segments-1))
+        lows_up = all(seg_lows[i] < seg_lows[i+1] for i in range(n_segments-1))
+        highs_down = all(seg_highs[i] > seg_highs[i+1] for i in range(n_segments-1))
+        lows_down = all(seg_lows[i] > seg_lows[i+1] for i in range(n_segments-1))
+        if highs_up and lows_up: return "UP"
+        if highs_down and lows_down: return "DOWN"
+        return "NEUTRAL"
+
+    all_klines = []
+    end_time = None
+    days = max(1, min(days, 30))
+    for _ in range(days):
+        url = f"{base}{path}?symbol={symbol}&interval=1m&limit=1440"
+        if end_time:
+            url += f"&endTime={end_time}"
+        try:
+            loop = asyncio.get_event_loop()
+            raw = await loop.run_in_executor(None, lambda: urllib.request.urlopen(url, timeout=10).read())
+            data = json.loads(raw)
+            if not data:
+                break
+            klines = [(float(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])) for k in data]
+            all_klines = klines + all_klines
+            end_time = int(data[0][0]) - 60000
+        except Exception as e:
+            return {"symbol": symbol, "error": str(e), "trades": [], "stats": {}}
+
+    if len(all_klines) < 60:
+        return {"symbol": symbol, "error": "Not enough data (< 60 candles)", "trades": [], "stats": {}}
+
+    from collections import deque
+    price_history = deque(maxlen=3600)
+    prev_mid = 0.0
+    trades = []
+    open_pos = None
+    wallet = 100.0
+    peak_wallet = 100.0
+
+    for idx, (t, o, h, l, c, v) in enumerate(all_klines):
+        mid = (h + l) / 2
+        if idx >= 1:
+            price_history.append(mid)
+        hl = len(price_history)
+
+        trend_1m = murphy(list(price_history), 60, 3) if hl >= 60 else "NEUTRAL"
+        trend_5m = murphy(list(price_history), 300, 3) if hl >= 300 else "NEUTRAL"
+
+        range_pct = 50.0
+        min_p = mid
+        max_p = mid
+        if hl > 1:
+            max_p = max(price_history)
+            min_p = min(price_history)
+            if max_p > min_p:
+                range_pct = ((mid - min_p) / (max_p - min_p)) * 100
+
+        change_1h = 0.0
+        if hl >= 60 and price_history[0] > 0:
+            window = min(hl, 3600)
+            change_1h = ((mid - price_history[-window]) / price_history[-window]) * 100
+
+        bid_rising = mid > prev_mid and prev_mid > 0
+        if mid != prev_mid:
+            prev_mid = mid
+
+        vol_avg = sum(k[5] for k in all_klines[max(0,idx-20):idx]) / max(idx, 1)
+        hl_range = h - l
+        avg_hl = sum(all_klines[i][2] - all_klines[i][3] for i in range(max(0, idx-10), max(0, idx))) / max(min(idx, 10), 1)
+        volatility_spike = hl_range > avg_hl * 1.5 if avg_hl > 0 else False
+        if c > o and v > vol_avg * 1.5 and volatility_spike:
+            imb = min(12.0, 8.0 + ((hl_range / max(avg_hl, 1e-10)) - 1.5) * 5.0)
+        elif c > o and v > vol_avg * 1.5:
+            imb = 6.0
+        elif c > o and v > vol_avg:
+            imb = 4.0
+        elif c > o:
+            imb = 3.0
+        elif volatility_spike and v > vol_avg:
+            imb = 2.5
+        else:
+            imb = 1.0
+
+        if trend_1m == "UP" and trend_5m == "UP":
+            price_dir = "UP"
+        elif trend_1m == "DOWN" and trend_5m == "DOWN":
+            price_dir = "DOWN"
+        else:
+            price_dir = "NEUTRAL"
+
+        data = {
+            "symbol": symbol, "bid": mid, "ask": mid, "imbalance": imb,
+            "price_direction": price_dir, "trend_1m": trend_1m, "trend_5m": trend_5m,
+            "range_pct": range_pct, "low_1h": min_p, "high_1h": max_p,
+            "bid_rising": bid_rising, "change_1h_pct": round(change_1h, 2),
+        }
+
+        if open_pos:
+            cur = mid
+            bp = open_pos["buy_price"]
+            hwm = open_pos["high_water_mark"]
+            sl = open_pos["stop_loss_price"]
+            trailing = open_pos["trailing_active"]
+            partial = open_pos.get("partial_closed", False)
+            remaining_qty = open_pos["remaining_qty"]
+            remaining_cost = open_pos["remaining_cost"]
+
+            if cur > hwm:
+                hwm = cur
+                new_sl = hwm * 0.98
+                if new_sl > sl:
+                    sl = new_sl
+
+            if not trailing:
+                pnl = ((cur - bp) / bp) * 100
+                if pnl >= 2.0:
+                    if remaining_cost < 10.0:
+                        ret = remaining_qty * cur * 0.999 * 0.9995
+                        pnl_pct = ((ret - remaining_cost) / remaining_cost) * 100
+                        wallet += ret
+                        trades.append({"t": int(t/1000), "type": "TP_FULL", "entry": bp, "exit": cur, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2)})
+                        open_pos = None
+                        continue
+                    else:
+                        half_qty = remaining_qty / 2
+                        half_cost = remaining_cost / 2
+                        ret = half_qty * cur * 0.999 * 0.9995
+                        pnl_pct = ((ret - half_cost) / half_cost) * 100
+                        wallet += ret
+                        trades.append({"t": int(t/1000), "type": "TP_PARTIAL", "entry": bp, "exit": cur, "pnl": round(pnl_pct, 2), "cost": round(half_cost, 2)})
+                        open_pos["remaining_qty"] = half_qty
+                        open_pos["remaining_cost"] = half_cost
+                        open_pos["partial_closed"] = True
+                        open_pos["scale_trail_pct"] = 0.5
+                    trailing = True
+
+            trail_pct = open_pos.get("scale_trail_pct", 1.0)
+            if cur <= sl:
+                ret = remaining_qty * cur * 0.999 * 0.9995
+                pnl_pct = ((ret - remaining_cost) / remaining_cost) * 100
+                wallet += ret
+                trades.append({"t": int(t/1000), "type": "SL", "entry": bp, "exit": cur, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2)})
+                open_pos = None
+            elif trailing and cur <= hwm * (1 - trail_pct / 100):
+                ret = remaining_qty * cur * 0.999 * 0.9995
+                pnl_pct = ((ret - remaining_cost) / remaining_cost) * 100
+                wallet += ret
+                trades.append({"t": int(t/1000), "type": "TRAIL", "entry": bp, "exit": cur, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2)})
+                open_pos = None
+            elif trailing and pnl < 1.5 and not partial:
+                ret = remaining_qty * cur * 0.999 * 0.9995
+                pnl_pct = ((ret - remaining_cost) / remaining_cost) * 100
+                wallet += ret
+                trades.append({"t": int(t/1000), "type": "TP", "entry": bp, "exit": cur, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2)})
+                open_pos = None
+
+            if open_pos:
+                open_pos["high_water_mark"] = hwm
+                open_pos["stop_loss_price"] = sl
+                open_pos["trailing_active"] = trailing
+
+            if wallet > peak_wallet:
+                peak_wallet = wallet
+
+        else:
+            if wallet < 10.0:
+                continue
+
+            # Dynamic volume filter: skip low-activity candles
+            if idx >= 20 and v < vol_avg * 0.5:
+                continue
+
+            # Triple confirmation: trend → imbalance → volume
+            if trend_1m != "UP":
+                continue
+
+            imbalance_req = 4
+            if symbol == 'DOGEUSDT':
+                imbalance_req = max(imbalance_req, 8)
+            momentum_ok = imb >= imbalance_req
+            if not momentum_ok:
+                continue
+            if price_dir != "UP" and imb < imbalance_req + 3:
+                continue
+            if range_pct > 50:
+                continue
+            if change_1h < -8.0:
+                continue
+            if vol_avg > 0 and c > o and v < vol_avg * 0.66:
+                continue
+
+            # ATR-based SL (same logic as live bot)
+            atr_val = None
+            if idx >= 14:
+                tr_sum = 0.0
+                for ai in range(14):
+                    i = idx - 13 + ai
+                    h, l, c = all_klines[i][2], all_klines[i][3], all_klines[i][4]
+                    pc = all_klines[i-1][4]
+                    tr_sum += max(h - l, abs(h - pc), abs(l - pc))
+                atr_val = tr_sum / 14
+
+            if atr_val and atr_val > 0:
+                sl_price = mid - atr_val * 2.5
+                max_sl = mid * 0.05
+                if mid - sl_price > max_sl:
+                    sl_price = mid - max_sl
+            else:
+                sl_price = mid * 0.98
+            min_sl_price = mid * 0.992
+            if sl_price > min_sl_price:
+                sl_price = min_sl_price
+
+            # Conviction level
+            conviction = "high" if imb >= 8 else "medium"
+
+            # Risk-based position sizing
+            sl_dist_pct = (mid - sl_price) / mid
+            risk_based = (wallet * 0.01) / sl_dist_pct if sl_dist_pct > 0 else wallet
+
+            conviction_max = 20.0 if conviction == "high" else 10.0
+            invest = min(risk_based, conviction_max, wallet)
+            qty = (invest / mid) * 0.999 * (1 / 1.0005)
+            wallet -= invest
+
+            open_pos = {
+                "buy_price": mid, "amount": qty, "cost": invest,
+                "remaining_qty": qty, "remaining_cost": invest,
+                "stop_loss_price": sl_price, "high_water_mark": mid,
+                "trailing_active": False, "partial_closed": False,
+                "entry_ts": int(t/1000),
+            }
+
+    if open_pos:
+        ret = open_pos["remaining_qty"] * mid * 0.999 * 0.9995
+        pnl_pct = ((ret - open_pos["remaining_cost"]) / open_pos["remaining_cost"]) * 100
+        wallet += ret
+        trades.append({"t": int(t/1000), "type": "FORCE_CLOSE", "entry": open_pos["buy_price"], "exit": mid, "pnl": round(pnl_pct, 2), "cost": round(open_pos["remaining_cost"], 2)})
+        open_pos = None
+
+    final_pnl = wallet - 100.0
+    win_trades = [t for t in trades if t["pnl"] > 0]
+    loss_trades = [t for t in trades if t["pnl"] <= 0]
+    dd = ((peak_wallet - wallet) / peak_wallet) * 100 if peak_wallet > 0 else 0
+
+    stats = {
+        "total_trades": len(trades),
+        "wins": len(win_trades),
+        "losses": len(loss_trades),
+        "win_rate": round(len(win_trades) / max(len(trades), 1) * 100, 1),
+        "final_balance": round(wallet, 2),
+        "total_pnl": round(final_pnl, 2),
+        "total_pnl_pct": round((final_pnl / 100) * 100, 2),
+        "max_drawdown": round(dd, 2),
+        "candles_scanned": len(all_klines),
+    }
+
+    log.info(f"[BACKTEST] {symbol} {days}d: {stats['total_trades']} trades, WR {stats['win_rate']}%, PnL {stats['total_pnl_pct']}%, DD {stats['max_drawdown']}%")
+    btf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "backtest.log")
+    try:
+        with open(btf, "a") as f:
+            f.write(json.dumps({"ts": time.time(), "symbol": symbol, "days": days, "stats": stats, "trades": trades}) + "\n")
+    except Exception as e:
+        log.error(f"[BACKTEST] Write error: {e}")
+
+    return {"symbol": symbol, "stats": stats, "trades": trades}
 
 if __name__ == "__main__":
     import uvicorn

@@ -904,11 +904,13 @@
             <div class="chart-header">
                 <h2 id="chart-title">BTCUSDT</h2>
                 <div style="display:flex;gap:6px;">
+                    <button id="btn-backtest" class="modal-close" onclick="runBacktest()" title="Run 7-day backtest" style="background:#2b6cb0;font-size:11px;">Backtest</button>
                     <button id="btn-enlarge" class="modal-close" onclick="toggleChartSize()" title="Enlarge chart" style="font-size:14px;">⛶</button>
                     <button class="modal-close" onclick="closeChart()">Close</button>
                 </div>
             </div>
             <div id="chart-container"></div>
+            <div id="backtest-results" style="display:none;margin-top:10px;font-size:11px;"></div>
         </div>
     </div>
 
@@ -941,6 +943,9 @@
         }
 
         async function openChart(symbol) {
+            document.getElementById('backtest-results').style.display = 'none';
+            document.getElementById('btn-backtest').disabled = false;
+            document.getElementById('btn-backtest').textContent = 'Backtest';
             const container = document.getElementById('chart-container');
             container.innerHTML = '';
             container.style.height = '320px';
@@ -1075,6 +1080,57 @@
 
         function closeChart() {
             document.getElementById('chart-modal').classList.remove('active');
+            document.getElementById('backtest-results').style.display = 'none';
+        }
+
+        async function runBacktest() {
+            const symbol = document.getElementById('chart-title').textContent;
+            const btn = document.getElementById('btn-backtest');
+            const resultsDiv = document.getElementById('backtest-results');
+            btn.disabled = true;
+            btn.textContent = 'Running...';
+            resultsDiv.style.display = 'none';
+            try {
+                const res = await fetch(`/api/backtest/${symbol}`);
+                const data = await res.json();
+                if (data.error) {
+                    resultsDiv.innerHTML = `<span style="color:#e53e3e;">Error: ${data.error}</span>`;
+                    resultsDiv.style.display = 'block';
+                    return;
+                }
+                const s = data.stats;
+                const wc = s.win_rate >= 50 ? '#48bb78' : s.win_rate >= 30 ? '#d69e2e' : '#e53e3e';
+                const pnlColor = s.total_pnl >= 0 ? '#48bb78' : '#e53e3e';
+                let tradesHtml = '';
+                if (data.trades.length > 0) {
+                    tradesHtml = '<div style="margin-top:8px;max-height:120px;overflow-y:auto;"><table style="width:100%;font-size:10px;border-collapse:collapse;">';
+                    tradesHtml += '<tr style="color:#a0aec0;"><th>Time</th><th>Type</th><th>Entry</th><th>Exit</th><th>PnL</th></tr>';
+                    data.trades.forEach(t => {
+                        const tc = t.pnl >= 0 ? '#48bb78' : '#e53e3e';
+                        const ts = new Date(t.t * 1000).toLocaleDateString();
+                        tradesHtml += `<tr><td>${ts}</td><td>${t.type}</td><td>${t.entry.toFixed(4)}</td><td>${t.exit.toFixed(4)}</td><td style="color:${tc}">${t.pnl >= 0 ? '+' : ''}${t.pnl}%</td></tr>`;
+                    });
+                    tradesHtml += '</table></div>';
+                }
+                resultsDiv.innerHTML = `
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;padding:8px;background:#171e29;border-radius:4px;border:1px solid #2d3748;">
+                        <div><span style="color:#a0aec0;">Trades</span><br><span style="font-weight:bold;font-size:14px;">${s.total_trades}</span></div>
+                        <div><span style="color:#a0aec0;">Win Rate</span><br><span style="font-weight:bold;font-size:14px;color:${wc};">${s.win_rate}%</span></div>
+                        <div><span style="color:#a0aec0;">PnL</span><br><span style="font-weight:bold;font-size:14px;color:${pnlColor};">${s.total_pnl_pct >= 0 ? '+' : ''}${s.total_pnl_pct}%</span></div>
+                        <div><span style="color:#a0aec0;">Max DD</span><br><span style="font-weight:bold;font-size:14px;color:#e53e3e;">${s.max_drawdown}%</span></div>
+                        <div><span style="color:#a0aec0;">Final</span><br><span style="font-weight:bold;font-size:14px;">$${s.final_balance}</span></div>
+                        <div><span style="color:#a0aec0;">W/L</span><br><span style="font-weight:bold;font-size:14px;"><span style="color:#48bb78;">${s.wins}</span>/<span style="color:#e53e3e;">${s.losses}</span></span></div>
+                    </div>
+                    ${tradesHtml}
+                `;
+                resultsDiv.style.display = 'block';
+            } catch (err) {
+                resultsDiv.innerHTML = `<span style="color:#e53e3e;">Error: ${err.message}</span>`;
+                resultsDiv.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Backtest';
+            }
         }
     </script>
 </body>
