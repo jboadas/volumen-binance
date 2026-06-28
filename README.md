@@ -20,9 +20,11 @@ start.sh ──► app/main.py (FastAPI + trading loop)
 ## Components
 
 | File | Role |
-|---|---|
+|---|---|---|
 | `app/main.py` | Main orchestrator. FastAPI, trading loop, REST endpoints |
 | `app/scanner.py` | Subprocess: WebSocket → imbalance, trends → Redis |
+| `app/strategy.py` | Pure strategy functions (shared between live + backtest) |
+| `app/backtest.py` | Standalone backtest engine (no Redis dependency) |
 | `app/__init__.py` | Package init |
 | `static/index.html` | Real-time dashboard with TradingView charts |
 | `scripts/backtest_range_filter.py` | Range filter backtest |

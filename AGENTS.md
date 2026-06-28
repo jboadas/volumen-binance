@@ -4,8 +4,10 @@ Real-time simulated trading bot for Binance. Two-process architecture: `app/main
 
 ## Project Structure
 
-- `app/main.py` — FastAPI server, monitoring loop (5s), strategy logic, REST API, static frontend, **backtest endpoint**
+- `app/main.py` — FastAPI server, monitoring loop (5s), REST API, static frontend, **backtest endpoint** (slimmed)
 - `app/scanner.py` — Subprocess: Binance WebSocket → order book imbalance, Murphy trend → Redis
+- `app/strategy.py` — **Pure strategy functions** (no Redis/FastAPI): murphy_trend, calc_atr, should_buy_pure, position sizing, S/R levels. Shared between live trading and backtest.
+- `app/backtest.py` — Standalone backtest engine using `strategy.py`. No Redis dependency.
 - `static/index.html` — Dashboard with TradingView Lightweight Charts, backtest UI
 - `scripts/backtest_range_filter.py` — Standalone backtest for range filters
 - `logs/` — Runtime logs (bot.log, trades.log, backtest.log)
@@ -22,7 +24,7 @@ Real-time simulated trading bot for Binance. Two-process architecture: `app/main
 ## Trading Strategy (v2 — June 2026)
 
 ### Entry: Triple Confirmación
-1. **Trend filter (base)**: `trend_1m == "UP"` obligatorio — sin tendencia alcista no se entra
+1. **Trend filter (base)**: `trend_1m == "UP"` + `trend_5m == "UP"` — ambas obligatorias (dead cat bounce gate)
 2. **Imbalance trigger (disparador)**: order book imbalance ≥ threshold (4x, 6x para DOGE)
 3. **Volume confirmation**: volume ratio ≥ 66% bullish + dynamic volume activity ≥ 0.5x avg
 
@@ -41,41 +43,45 @@ Real-time simulated trading bot for Binance. Two-process architecture: `app/main
 ## Key Functions
 
 - `monitoring_loop()` in main.py — main 5s loop
-- `should_buy()` — entry decision logic (triple confirmación)
-- `backtest_symbol()` in main.py — async backtest endpoint, 7-30 días
-- `_murphy_trend()` in scanner.py — trend detection via segment comparison
+- `should_buy()` in main.py — wrapper que busca datos en Redis/Binance, delega en `should_buy_pure` de strategy
+- `run_backtest()` in backtest.py — engine autónomo (usa OHLCV real para SL/TP con low/high de velas), usa `strategy.py` para decisiones
+- `should_buy_pure()` in strategy.py — lógica de entrada pura: trend_1m==UP + trend_5m==UP + imbalance + volumen + L1 checks
+- `murphy_trend()` in strategy.py — trend detection via segment comparison
 - `run_screener()` — re-scores market every 6h
-- `calc_sr_levels()` — pivot-based support/resistance
-- `get_config(symbol)` — returns CONFIG dict
-- `_calc_atr()` — ATR(14) on 1m candles, cached in `_klines_cache`
+- `calc_sr_levels()` in strategy.py — pivot-based support/resistance
+- `get_config(symbol)` in strategy.py — returns CONFIG dict
+- `calc_atr()` in strategy.py — ATR(14) on 1m candles
 
 ## Backtest Results (7d, $100 wallet, June 2026)
 
-| Symbol   | Trades | Win%  | PnL%    | Final    |
-|----------|--------|-------|---------|----------|
-| SUIUSDT  | 14     | 57.1% | +0.30%  | $100.30  |
-| SOLUSDT  | 10     | 60.0% | +0.21%  | $100.21  |
-| AAVEUSDT | 7      | 57.1% | +0.17%  | $100.17  |
-| ETHUSDT  | 12     | 50.0% | -0.33%  | $99.67   |
-| BNBUSDT  | 8      | 25.0% | -0.82%  | $99.18   |
-| BTCUSDT  | 10     | 30.0% | -0.91%  | $99.09   |
-| XRPUSDT  | 12     | 33.3% | -0.95%  | $99.05   |
-| ZECUSDT  | 11     | 18.2% | -1.33%  | $98.67   |
-| DOGEUSDT | 9      | 11.1% | -1.67%  | $98.33   |
-| NEARUSDT | 18     | 22.2% | -2.30%  | $97.70   |
+Estado actual (OHLCV honesta + trend_5m==UP):
+
+| Symbol   | Trades | Win%  | PnL%    | Salidas               |
+|----------|--------|-------|---------|-----------------------|
+| ETHUSDT  | 2      | 100%  | +0.17%  | TP_PARTIAL + TRAIL    |
+| BNBUSDT  | 1      | 100%  | +0.02%  | SL (breakeven)        |
+| BTCUSDT  | 1      | 100%  | +0.00%  | SL (breakeven)        |
+| DOGEUSDT | 2      | 50%   | -0.00%  | 2× SL (breakeven)     |
+| XRPUSDT  | 1      | 0%    | -0.10%  | SL                    |
+| NEARUSDT | 0      | —     | —       | —                     |
+| AAVEUSDT | 0      | —     | —       | —                     |
+| ZECUSDT  | 0      | —     | —       | —                     |
+| SUIUSDT  | 0      | —     | —       | —                     |
+| SOLUSDT  | 0      | —     | —       | —                     |
+| **TOTAL**| **7**  |**71%**|**+$0.09**| 5 SL + 1 TP_PARTIAL + 1 TRAIL |
 
 ### Key Milestones (por orden)
-1. **Linea base**: win rates 6-12%, todas las wallets en negativo
-2. **ATR 2.5x + hard floor 0.8%**: SL más ancho, menos stops por ruido
-3. **Triple confirmación**: trend_1m==UP + imbalance + volumen — WR saltó a ~42%
-4. **FORCE_CLOSE bugfix**: wallet tracking correcto (quitó falsos -21% en BTC/DOGE)
-5. **Imbalance sintético por volatilidad**: backtest más realista
-6. **TP 2.0%** (asimétrico 1:2.5 con SL 0.8%)
-7. **Volumen dinámico**: filtro adaptativo reemplazó time filter fijo
+1. **Refactor modular**: `app/strategy.py` + `app/backtest.py` — lógica compartida, backtest sin Redis
+2. **OHLCV honesta**: SL usa candle low, TP usa candle high, HWM usa candle high. Elimina SL intra-vela no detectados
+3. **Trend_5m gate**: `trend_1m==UP && trend_5m==UP` — bloquea dead cat bounces, WR salta de 35% a 71%
+4. **Imbalance como convicción** (no gate): imbalance define tamaño de posición ($5/$10/$20), no bloquea entrada
+5. **3 confirmaciones L1**: spread compression, mid-velocity 5s, bid/ask size ratio
+6. **ATR dinámico**: SL = ATR × 2.5, hard floor 0.8%, hard cap 5%
 
 ### Pendiente
-- Whitelist de pares rentables (SOL, SUI, AAVE)
-- Posible ajuste fino de TP (1.8% como punto medio)
+- Escalar posición en trades con trend_5m alcista (high conviction automático)
+- Monitorear frecuencia en backtest de 30 días (más trades para validar WR)
+- Evaluar whitelist manual (ETH, DOGE funcionan; XRP, SUI no)
 
 ## Common Tasks
 

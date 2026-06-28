@@ -6,6 +6,7 @@ import logging, os, sys
 from collections import deque
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.strategy import murphy_trend
 
 LOGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "bot.log")
 
@@ -28,29 +29,6 @@ except FileNotFoundError:
     sys.exit(1)
 
 
-def _murphy_trend(history, window, n_segments=3):
-    if len(history) < window or window < n_segments * 2:
-        return "NEUTRAL"
-    seg_size = window // n_segments
-    recent = history[-window:]
-    seg_highs = []
-    seg_lows = []
-    for i in range(n_segments):
-        start = i * seg_size
-        seg = recent[start:start + seg_size]
-        seg_highs.append(max(seg))
-        seg_lows.append(min(seg))
-    highs_up = all(seg_highs[i] < seg_highs[i + 1] for i in range(n_segments - 1))
-    lows_up = all(seg_lows[i] < seg_lows[i + 1] for i in range(n_segments - 1))
-    highs_down = all(seg_highs[i] > seg_highs[i + 1] for i in range(n_segments - 1))
-    lows_down = all(seg_lows[i] > seg_lows[i + 1] for i in range(n_segments - 1))
-    if highs_up and lows_up:
-        return "UP"
-    if highs_down and lows_down:
-        return "DOWN"
-    return "NEUTRAL"
-
-
 class MarketScanner:
     def __init__(self, exchange_id, symbols):
         self.exchange_id = exchange_id
@@ -59,6 +37,7 @@ class MarketScanner:
         self.r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
         self.market_data = {}
         self.price_history = {}
+        self.spread_history = {}
         self.last_tick_time = {}
         self.prev_mid = {}
         self._last_dyn_set = set()
@@ -82,6 +61,7 @@ class MarketScanner:
             if s not in active:
                 del self.market_data[s]
                 del self.price_history[s]
+                del self.spread_history[s]
                 del self.last_tick_time[s]
                 del self.prev_mid[s]
         for s in all_syms:
@@ -89,6 +69,7 @@ class MarketScanner:
             if su not in self.market_data:
                 self.market_data[su] = {}
                 self.price_history[su] = deque(maxlen=3600)
+                self.spread_history[su] = deque(maxlen=60)
                 self.last_tick_time[su] = 0
                 self.prev_mid[su] = 0.0
         self._ws_url = self._build_url(all_syms)
@@ -132,10 +113,10 @@ class MarketScanner:
                             max_p = current_mid
 
                             if history_len >= 60:
-                                trend_1m = _murphy_trend(list(history), 60, 3)
+                                trend_1m = murphy_trend(list(history), 60, 3)
 
                             if history_len >= 300:
-                                trend_5m = _murphy_trend(list(history), 300, 3)
+                                trend_5m = murphy_trend(list(history), 300, 3)
 
                             if history_len > 1:
                                 max_p = max(history)
@@ -163,6 +144,23 @@ class MarketScanner:
 
                             liquidity = bid_q * bid_p + ask_q * ask_p
 
+                            spread_pct = (ask_p - bid_p) / current_mid if current_mid > 0 else 0
+                            self.spread_history[symbol].append(spread_pct)
+                            spread_history = self.spread_history[symbol]
+                            spread_ok = True
+                            if len(spread_history) >= 10:
+                                spread_mean = sum(spread_history) / len(spread_history)
+                                spread_ok = spread_pct <= spread_mean * 1.1
+
+                            mid_velocity_5s = 0.0
+                            mid_velocity_ok = False
+                            if history_len >= 5:
+                                mid_velocity_5s = current_mid - history[-5]
+                                mid_velocity_ok = mid_velocity_5s > current_mid * 0.0001
+
+                            size_ratio = bid_q / ask_q if ask_q > 0 else 1.0
+                            size_ratio_ok = size_ratio > 1.2
+
                             self.market_data[symbol].update({
                                 "symbol": symbol,
                                 "bid": bid_p,
@@ -177,6 +175,12 @@ class MarketScanner:
                                 "bid_rising": bid_rising,
                                 "change_1h_pct": round(change_1h_pct, 2),
                                 "liquidity": round(liquidity, 2),
+                                "spread_pct": round(spread_pct, 6),
+                                "spread_ok": spread_ok,
+                                "mid_velocity_5s": round(mid_velocity_5s, 6),
+                                "mid_velocity_ok": mid_velocity_ok,
+                                "size_ratio": round(size_ratio, 2),
+                                "size_ratio_ok": size_ratio_ok,
                             })
 
                             market_list = [v for v in self.market_data.values() if v]
