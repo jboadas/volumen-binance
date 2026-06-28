@@ -106,6 +106,12 @@ async def run_backtest(symbol, days, exchange_cfg):
         mid_velocity_ok = mid_velocity_5s > mid * 0.0001
         size_ratio_ok = imb > 1.2
 
+        high_5 = max(all_klines[i][2] for i in range(max(0, idx-4), idx+1))
+        low_5 = min(all_klines[i][3] for i in range(max(0, idx-4), idx+1))
+
+        candle_body_pct = abs(c - o) / mid * 100 if mid > 0 else 0
+        candle_vol_ratio = v / vol_avg if vol_avg > 0 else 0
+
         data = {
             "symbol": symbol, "bid": mid, "ask": mid, "imbalance": imb,
             "price_direction": price_dir, "trend_1m": trend_1m, "trend_5m": trend_5m,
@@ -114,6 +120,9 @@ async def run_backtest(symbol, days, exchange_cfg):
             "spread_ok": True, "mid_velocity_5s": round(mid_velocity_5s, 6),
             "mid_velocity_ok": mid_velocity_ok, "size_ratio": round(imb, 2),
             "size_ratio_ok": size_ratio_ok,
+            "high_5": high_5, "low_5": low_5,
+            "candle_body_pct": round(candle_body_pct, 3),
+            "candle_vol_ratio": round(candle_vol_ratio, 2),
         }
 
         # --- Position management (honest OHLCV) ---
@@ -147,7 +156,7 @@ async def run_backtest(symbol, days, exchange_cfg):
                 pnl_pct = ((ret - remaining_cost) / remaining_cost) * 100
                 wallet += ret
                 label = "TRAIL" if trailing else "SL"
-                trades.append({"t": int(t/1000), "type": label, "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2)})
+                trades.append({"t": int(t/1000), "type": label, "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2), "peak": round(((hwm - bp) / bp) * 100, 2)})
                 open_pos = None
             elif tp_hit:
                 if remaining_cost < 10.0:
@@ -155,7 +164,7 @@ async def run_backtest(symbol, days, exchange_cfg):
                     ret = remaining_qty * exit_price * 0.999 * 0.9995
                     pnl_pct = ((ret - remaining_cost) / remaining_cost) * 100
                     wallet += ret
-                    trades.append({"t": int(t/1000), "type": "TP_FULL", "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2)})
+                    trades.append({"t": int(t/1000), "type": "TP_FULL", "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2), "peak": round(((hwm - bp) / bp) * 100, 2)})
                     open_pos = None
                 else:
                     exit_price = tp_price
@@ -164,7 +173,7 @@ async def run_backtest(symbol, days, exchange_cfg):
                     ret = half_qty * exit_price * 0.999 * 0.9995
                     pnl_pct = ((ret - half_cost) / half_cost) * 100
                     wallet += ret
-                    trades.append({"t": int(t/1000), "type": "TP_PARTIAL", "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(half_cost, 2)})
+                    trades.append({"t": int(t/1000), "type": "TP_PARTIAL", "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(half_cost, 2), "peak": round(((hwm - bp) / bp) * 100, 2)})
                     open_pos["remaining_qty"] = half_qty
                     open_pos["remaining_cost"] = half_cost
                     open_pos["partial_closed"] = True
@@ -175,7 +184,7 @@ async def run_backtest(symbol, days, exchange_cfg):
                 ret = remaining_qty * exit_price * 0.999 * 0.9995
                 pnl_pct = ((ret - remaining_cost) / remaining_cost) * 100
                 wallet += ret
-                trades.append({"t": int(t/1000), "type": "TRAIL", "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2)})
+                trades.append({"t": int(t/1000), "type": "TRAIL", "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2), "peak": round(((hwm - bp) / bp) * 100, 2)})
                 open_pos = None
             elif trailing and not partial:
                 pnl_mid = ((mid - bp) / bp) * 100
@@ -184,7 +193,7 @@ async def run_backtest(symbol, days, exchange_cfg):
                     ret = remaining_qty * exit_price * 0.999 * 0.9995
                     pnl_pct = ((ret - remaining_cost) / remaining_cost) * 100
                     wallet += ret
-                    trades.append({"t": int(t/1000), "type": "TP", "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2)})
+                    trades.append({"t": int(t/1000), "type": "TP", "entry": bp, "exit": exit_price, "pnl": round(pnl_pct, 2), "cost": round(remaining_cost, 2), "peak": round(((hwm - bp) / bp) * 100, 2)})
                     open_pos = None
 
             if open_pos:
@@ -236,7 +245,8 @@ async def run_backtest(symbol, days, exchange_cfg):
         ret = open_pos["remaining_qty"] * mid * 0.999 * 0.9995
         pnl_pct = ((ret - open_pos["remaining_cost"]) / open_pos["remaining_cost"]) * 100
         wallet += ret
-        trades.append({"t": int(t/1000), "type": "FORCE_CLOSE", "entry": open_pos["buy_price"], "exit": mid, "pnl": round(pnl_pct, 2), "cost": round(open_pos["remaining_cost"], 2)})
+        fp = open_pos["buy_price"]
+        trades.append({"t": int(t/1000), "type": "FORCE_CLOSE", "entry": fp, "exit": mid, "pnl": round(pnl_pct, 2), "cost": round(open_pos["remaining_cost"], 2), "peak": round(((open_pos["high_water_mark"] - fp) / fp) * 100, 2)})
         open_pos = None
 
     final_pnl = wallet - 100.0

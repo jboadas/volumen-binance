@@ -111,8 +111,16 @@ def should_buy_pure(data, cfg, vol_analysis, wick_ok, wick_reason, btc_weak=Fals
     if not wick_ok:
         return False, wick_reason, "none"
 
-    if trend_1m != "UP" or trend_5m != "UP":
-        return False, f"no entry: trend_1m={trend_1m} trend_5m={trend_5m} (need both UP)", "none"
+    if trend_5m != "UP":
+        return False, f"no entry: trend_5m={trend_5m} ≠ UP", "none"
+    if trend_1m != "UP":
+        return False, f"no entry: trend_1m={trend_1m} ≠ UP", "none"
+    high_5 = data.get("high_5")
+    low_5 = data.get("low_5")
+    if high_5 and low_5 and high_5 > low_5:
+        pos_pct = (price - low_5) / (high_5 - low_5) * 100
+        if pos_pct >= 60:
+            return False, f"micro-top: price at {pos_pct:.0f}% of 5-candle range", "none"
 
     vol_activity = vol_analysis.get("vol_activity", 0)
     if vol_activity < 0.5:
@@ -135,6 +143,9 @@ def should_buy_pure(data, cfg, vol_analysis, wick_ok, wick_reason, btc_weak=Fals
     if not size_ratio_ok:
         sr = data.get("size_ratio", 0)
         return False, f"bid/ask size ratio low: {sr:.2f}x (need >1.2x)", "none"
+
+    candle_body_pct = data.get("candle_body_pct", 0)
+    candle_vol_ratio = data.get("candle_vol_ratio", 0)
 
     if imbalance >= 8 and vol_ratio >= 0.8:
         conviction = "high"

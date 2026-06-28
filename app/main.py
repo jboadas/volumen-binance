@@ -283,6 +283,11 @@ async def _analyze_klines(symbol):
     ce = _strategy_analyze_volume(klines)
     ce["ts"] = now
 
+    high_5 = max(k[1] for k in klines[-5:])
+    low_5 = min(k[2] for k in klines[-5:])
+    ce["high_5"] = high_5
+    ce["low_5"] = low_5
+
     mid = len(klines) // 2
     old = [{"h": h, "l": l} for _, h, l, _, _ in klines[:mid]]
     recent = klines[mid:]
@@ -348,6 +353,8 @@ async def should_buy(data, cfg, btc_weak=False, regime="normal"):
         "vol_trend": vol_candles.get("vol_trend", False),
     }
     polarity_ok = vol_candles.get("polarity_ok", True)
+    data["high_5"] = vol_candles.get("high_5")
+    data["low_5"] = vol_candles.get("low_5")
 
     ok, reason, conviction = should_buy_pure(
         data, cfg, vol_analysis, wick_ok, wick_reason,
