@@ -16,3 +16,8 @@ __pycache__/
 top_pairs.json
 logs/
 .opencode/memory/
+.opencode/
+
+# IDE
+.vscode/
+
